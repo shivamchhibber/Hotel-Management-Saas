@@ -1,0 +1,151 @@
+import React, { useState, useEffect } from "react";
+import { collection, getDocs, query, orderBy } from "firebase/firestore";
+import { db } from "../../../firebase/config";
+import Widget from "components/widget/Widget";
+import CheckTable from "views/admin/default/components/CheckTable";
+import ComplexTable from "views/admin/default/components/ComplexTable";
+import { columnsDataCheck, columnsDataComplex } from "views/admin/default/variables/columnsData";
+import {
+    MdBusiness,
+    MdPeople,
+    MdHotel,
+    MdTrendingUp,
+    MdCheckCircle,
+    MdCancel
+} from "react-icons/md";
+
+const SuperAdminDashboard = () => {
+    const [stats, setStats] = useState({
+        totalHotels: 0,
+        totalUsers: 0,
+        activeHotels: 0,
+        totalRevenue: 0
+    });
+    const [recentHotels, setRecentHotels] = useState([]);
+    const [recentUsers, setRecentUsers] = useState([]);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        fetchDashboardData();
+    }, []);
+
+    const fetchDashboardData = async () => {
+        try {
+            setLoading(true);
+
+            // Fetch hotels
+            const hotelsQuery = query(collection(db, "hotels"), orderBy("createdAt", "desc"));
+            const hotelsSnapshot = await getDocs(hotelsQuery);
+            const hotels = hotelsSnapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+            }));
+
+            // Fetch users
+            const usersQuery = query(collection(db, "users"), orderBy("createdAt", "desc"));
+            const usersSnapshot = await getDocs(usersQuery);
+            const users = usersSnapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+            }));
+
+            // Calculate stats
+            const activeHotels = hotels.filter(hotel => hotel.isActive).length;
+            const totalRevenue = hotels.reduce((sum, hotel) => sum + (hotel.totalRevenue || 0), 0);
+
+            setStats({
+                totalHotels: hotels.length,
+                totalUsers: users.length,
+                activeHotels,
+                totalRevenue
+            });
+
+            setRecentHotels(hotels.slice(0, 5));
+            setRecentUsers(users.slice(0, 5));
+        } catch (error) {
+            console.error("Error fetching dashboard data:", error);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const hotelColumns = [
+        { Header: "Hotel Name", accessor: "name" },
+        { Header: "Owner", accessor: "ownerId" },
+        { Header: "Address", accessor: "address" },
+        { Header: "Active", accessor: "isActive" },
+        { Header: "Created At", accessor: "createdAt" },
+    ];
+
+    const userColumns = [
+        { Header: "Name", accessor: "displayName" },
+        { Header: "Email", accessor: "email" },
+        { Header: "Role", accessor: "role" },
+        { Header: "Active", accessor: "isActive" },
+        { Header: "Created At", accessor: "createdAt" },
+    ];
+
+    const formatCurrency = (amount) => {
+        return new Intl.NumberFormat('en-IN', {
+            style: 'currency',
+            currency: 'INR'
+        }).format(amount);
+    };
+
+    if (loading) {
+        return (
+            <div className="flex h-screen items-center justify-center">
+                <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-brand-500"></div>
+            </div>
+        );
+    }
+
+    return (
+        <div>
+            {/* Stats Cards */}
+            <div className="mt-3 grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-4">
+                <Widget
+                    icon={<MdBusiness className="h-7 w-7" />}
+                    title={"Total Hotels"}
+                    subtitle={stats.totalHotels.toString()}
+                />
+                <Widget
+                    icon={<MdPeople className="h-6 w-6" />}
+                    title={"Total Users"}
+                    subtitle={stats.totalUsers.toString()}
+                />
+                <Widget
+                    icon={<MdCheckCircle className="h-7 w-7" />}
+                    title={"Active Hotels"}
+                    subtitle={stats.activeHotels.toString()}
+                />
+                <Widget
+                    icon={<MdTrendingUp className="h-6 w-6" />}
+                    title={"Total Revenue"}
+                    subtitle={formatCurrency(stats.totalRevenue)}
+                />
+            </div>
+
+            {/* Recent Hotels and Users */}
+            <div className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-2">
+                {/* Recent Hotels */}
+                <div>
+                    <h3 className="mb-4 text-xl font-bold text-navy-700 dark:text-white">
+                        Recent Hotels
+                    </h3>
+                    <CheckTable title="Recent Hotels" columnsData={hotelColumns} tableData={recentHotels} />
+                </div>
+
+                {/* Recent Users */}
+                <div>
+                    <h3 className="mb-4 text-xl font-bold text-navy-700 dark:text-white">
+                        Recent Users
+                    </h3>
+                    <CheckTable title="Recent Users" columnsData={userColumns} tableData={recentUsers} />
+                </div>
+            </div>
+        </div>
+    );
+};
+
+export default SuperAdminDashboard;

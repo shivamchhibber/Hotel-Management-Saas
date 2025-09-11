@@ -1,0 +1,178 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper function to check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Helper function to get user role
+    function getUserRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+    
+    // Helper function to check if user is super admin
+    function isSuperAdmin() {
+      return isAuthenticated() && getUserRole() == 'super_admin';
+    }
+    
+    // Helper function to check if user is hotel owner
+    function isHotelOwner() {
+      return isAuthenticated() && getUserRole() == 'hotel_owner';
+    }
+    
+    // Helper function to check if user is hotel staff
+    function isHotelStaff() {
+      return isAuthenticated() && getUserRole() == 'hotel_staff';
+    }
+    
+    // Helper function to check if user is guest
+    function isGuest() {
+      return isAuthenticated() && getUserRole() == 'guest';
+    }
+    
+    // Helper function to check if user owns the hotel
+    function ownsHotel(hotelId) {
+      return isHotelOwner() && 
+        get(/databases/$(database)/documents/hotels/$(hotelId)).data.ownerId == request.auth.uid;
+    }
+    
+    // Helper function to check if user works at the hotel
+    function worksAtHotel(hotelId) {
+      return (isHotelOwner() || isHotelStaff()) && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.hotelId == hotelId;
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (
+        // Users can read their own data
+        request.auth.uid == userId ||
+        // Super admins can read all users
+        isSuperAdmin() ||
+        // Hotel owners can read their staff
+        (isHotelOwner() && resource.data.hotelId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.hotelId)
+      );
+      
+      allow write: if isAuthenticated() && (
+        // Users can update their own data (except role)
+        (request.auth.uid == userId && !('role' in request.resource.data)) ||
+        // Super admins can write all users
+        isSuperAdmin() ||
+        // Hotel owners can create/update their staff
+        (isHotelOwner() && request.resource.data.hotelId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.hotelId)
+      );
+    }
+
+    // Hotels collection
+    match /hotels/{hotelId} {
+      allow read: if isAuthenticated() && (
+        // Super admins can read all hotels
+        isSuperAdmin() ||
+        // Hotel owners can read their own hotels
+        ownsHotel(hotelId) ||
+        // Hotel staff can read their hotel
+        worksAtHotel(hotelId)
+      );
+      
+      allow write: if isAuthenticated() && (
+        // Super admins can write all hotels
+        isSuperAdmin() ||
+        // Hotel owners can write their own hotels
+        ownsHotel(hotelId)
+      );
+    }
+
+    // Guests collection
+    match /guests/{guestId} {
+      allow read: if isAuthenticated() && (
+        // Guests can read their own data
+        (isGuest() && request.auth.uid == guestId) ||
+        // Hotel owners can read guests of their hotels
+        (isHotelOwner() && resource.data.hotelId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.hotelId) ||
+        // Hotel staff can read guests of their hotel
+        (isHotelStaff() && resource.data.hotelId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.hotelId) ||
+        // Super admins can read all guests
+        isSuperAdmin()
+      );
+      
+      allow write: if isAuthenticated() && (
+        // Guests can update their own data
+        (isGuest() && request.auth.uid == guestId) ||
+        // Hotel owners can write guests of their hotels
+        (isHotelOwner() && request.resource.data.hotelId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.hotelId) ||
+        // Hotel staff can write guests of their hotel
+        (isHotelStaff() && request.resource.data.hotelId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.hotelId) ||
+        // Super admins can write all guests
+        isSuperAdmin()
+      );
+    }
+
+    // Check-ins collection
+    match /checkins/{checkinId} {
+      allow read: if isAuthenticated() && (
+        // Guests can read their own check-ins
+        (isGuest() && resource.data.guestId == request.auth.uid) ||
+        // Hotel owners can read check-ins of their hotels
+        (isHotelOwner() && resource.data.hotelId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.hotelId) ||
+        // Hotel staff can read check-ins of their hotel
+        (isHotelStaff() && resource.data.hotelId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.hotelId) ||
+        // Super admins can read all check-ins
+        isSuperAdmin()
+      );
+      
+      allow write: if isAuthenticated() && (
+        // Hotel owners can write check-ins of their hotels
+        (isHotelOwner() && request.resource.data.hotelId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.hotelId) ||
+        // Hotel staff can write check-ins of their hotel
+        (isHotelStaff() && request.resource.data.hotelId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.hotelId) ||
+        // Super admins can write all check-ins
+        isSuperAdmin()
+      );
+    }
+
+    // Check-outs collection
+    match /checkouts/{checkoutId} {
+      allow read: if isAuthenticated() && (
+        // Guests can read their own check-outs
+        (isGuest() && resource.data.guestId == request.auth.uid) ||
+        // Hotel owners can read check-outs of their hotels
+        (isHotelOwner() && resource.data.hotelId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.hotelId) ||
+        // Hotel staff can read check-outs of their hotel
+        (isHotelStaff() && resource.data.hotelId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.hotelId) ||
+        // Super admins can read all check-outs
+        isSuperAdmin()
+      );
+      
+      allow write: if isAuthenticated() && (
+        // Hotel owners can write check-outs of their hotels
+        (isHotelOwner() && request.resource.data.hotelId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.hotelId) ||
+        // Hotel staff can write check-outs of their hotel
+        (isHotelStaff() && request.resource.data.hotelId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.hotelId) ||
+        // Super admins can write all check-outs
+        isSuperAdmin()
+      );
+    }
+
+    // Activity logs collection
+    match /activity_logs/{logId} {
+      allow read: if isAuthenticated() && (
+        // Hotel owners can read logs of their hotels
+        (isHotelOwner() && resource.data.hotelId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.hotelId) ||
+        // Hotel staff can read logs of their hotel
+        (isHotelStaff() && resource.data.hotelId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.hotelId) ||
+        // Super admins can read all logs
+        isSuperAdmin()
+      );
+      
+      allow write: if isAuthenticated() && (
+        // Hotel owners can write logs of their hotels
+        (isHotelOwner() && request.resource.data.hotelId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.hotelId) ||
+        // Hotel staff can write logs of their hotel
+        (isHotelStaff() && request.resource.data.hotelId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.hotelId) ||
+        // Super admins can write all logs
+        isSuperAdmin()
+      );
+    }
+  }
+}
