@@ -1,19 +1,15 @@
 import React, { useState, useEffect } from "react";
-import { collection, getDocs, doc, addDoc, updateDoc, setDoc, query, where, orderBy, serverTimestamp, limit } from "firebase/firestore";
-import { createUserWithEmailAndPassword, updateProfile } from "firebase/auth";
+import { collection, getDocs, doc, updateDoc, query, where, limit } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
-import { db, auth, functions } from "../../../firebase/config";
+import { db, functions } from "../../../firebase/config";
 import { useAuth } from "contexts/AuthContext";
 import ComplexTable from "views/admin/default/components/ComplexTable";
 import InputField from "components/fields/InputField";
 import {
-    MdPeople,
     MdAdd,
-    MdEdit,
     MdCheckCircle,
     MdCancel,
     MdEmail,
-    MdPhone,
     MdLock,
     MdVisibility,
     MdVisibilityOff,
@@ -108,31 +104,14 @@ const StaffManagement = () => {
             // Generate password if not provided
             const password = formData.password || generatePassword();
 
-            // Resolve current owner's users doc id (not auth uid)
-            const ownerSnap = await getDocs(query(collection(db, "users"), where("uid", "==", currentUser.uid), limit(1)));
-            const ownerDocId = ownerSnap.docs[0]?.id;
-
-            // Find the hotel owned by this owner document id
-            const hotelSnap = await getDocs(query(collection(db, "hotels"), where("ownerId", "==", ownerDocId), limit(1)));
-            const hotelId = hotelSnap.docs[0]?.id;
-
-            if (!hotelId) {
-                console.error("No hotel ID found for user");
-                return;
-            }
-
-            // Call the Firebase Function to create staff user
             const createStaffUser = httpsCallable(functions, 'createStaffUser');
-            
-            const result = await createStaffUser({
+
+            await createStaffUser({
                 email: formData.email,
                 password: password,
                 displayName: formData.displayName,
-                phoneNumber: formData.phoneNumber,
-                hotelId: hotelId
+                phoneNumber: formData.phoneNumber || null,
             });
-
-            console.log('Staff created successfully:', result.data);
 
             // Show generated credentials
             setGeneratedCredentials({
@@ -178,7 +157,7 @@ const StaffManagement = () => {
             const deleteStaffUser = httpsCallable(functions, 'deleteStaffUser');
             
             await deleteStaffUser({
-                staffUid: staffToDelete.uid
+                staffUid: staffToDelete.id
             });
 
             // Remove from local state
@@ -198,23 +177,22 @@ const StaffManagement = () => {
         try {
             if (!staffToDelete) return;
 
-            // Call the Firebase Function to reset staff password
             const resetStaffPassword = httpsCallable(functions, 'resetStaffPassword');
-            
+
             const result = await resetStaffPassword({
-                staffUid: staffToDelete.uid
+                staffUid: staffToDelete.id,
             });
 
-            // Show new credentials
             setResetPasswordCredentials({
-                email: result.data.staffEmail,
-                password: result.data.newPassword,
-                displayName: result.data.staffName
+                message: result.data.message,
+                emailSent: result.data.emailSent,
+                staffEmail: result.data.staffEmail,
+                staffName: result.data.staffName,
             });
 
             setShowResetPasswordModal(false);
             setStaffToDelete(null);
-            
+
         } catch (error) {
             console.error("Error resetting password:", error);
             alert("Error resetting password: " + error.message);
@@ -346,12 +324,11 @@ const StaffManagement = () => {
                             />
 
                             <InputField
-                                label="Phone Number*"
+                                label="Phone Number (optional)"
                                 type="tel"
                                 placeholder="Enter phone number"
                                 value={formData.phoneNumber}
                                 onChange={(e) => setFormData({ ...formData, phoneNumber: e.target.value })}
-                                required
                             />
 
                             <div>
@@ -534,7 +511,7 @@ const StaffManagement = () => {
                         <div className="space-y-4">
                             <div className="rounded-lg bg-blue-50 p-4 dark:bg-blue-900/20">
                                 <p className="text-blue-800 dark:text-blue-200">
-                                    This will generate a new password for <strong>{staffToDelete.displayName}</strong>. The old password will no longer work.
+                                    Sends a Firebase password reset link to <strong>{staffToDelete.displayName}</strong> when SMTP is configured on Cloud Functions. Otherwise the link is not emailed (see server logs / README).
                                 </p>
                             </div>
 
@@ -572,7 +549,7 @@ const StaffManagement = () => {
                     <div className="w-full max-w-md rounded-lg bg-white p-6 dark:bg-navy-800">
                         <div className="mb-4 flex items-center justify-between">
                             <h3 className="text-xl font-bold text-navy-700 dark:text-white">
-                                Password Reset Successfully!
+                                Password reset
                             </h3>
                             <button
                                 onClick={() => setResetPasswordCredentials(null)}
@@ -583,51 +560,32 @@ const StaffManagement = () => {
                         </div>
 
                         <div className="space-y-4">
-                            <div className="rounded-lg bg-green-50 p-4 dark:bg-green-900/20">
+                            <div className={`rounded-lg p-4 ${resetPasswordCredentials.emailSent ? 'bg-green-50 dark:bg-green-900/20' : 'bg-amber-50 dark:bg-amber-900/20'}`}>
                                 <div className="flex items-center gap-2 mb-2">
                                     <MdCheckCircle className="h-5 w-5 text-green-600" />
-                                    <span className="font-medium text-green-800 dark:text-green-200">
-                                        Password has been reset for "{resetPasswordCredentials.displayName}".
+                                    <span className="font-medium text-navy-800 dark:text-white">
+                                        {resetPasswordCredentials.message}
                                     </span>
                                 </div>
-                                <p className="text-sm text-green-700 dark:text-green-300">
-                                    Please share the new login credentials with the staff member:
+                                <p className="text-sm text-navy-700 dark:text-gray-300">
+                                    {resetPasswordCredentials.staffName ? `Staff: ${resetPasswordCredentials.staffName}` : ''}
+                                    {resetPasswordCredentials.staffEmail ? ` · ${resetPasswordCredentials.staffEmail}` : ''}
                                 </p>
                             </div>
 
-                            <div className="space-y-3">
-                                <div>
-                                    <label className="block text-sm font-medium text-navy-700 dark:text-white mb-1">
-                                        Email
-                                    </label>
-                                    <div className="flex items-center gap-2 p-3 bg-gray-50 dark:bg-navy-700 rounded-lg">
-                                        <MdEmail className="h-4 w-4 text-gray-500" />
-                                        <span className="font-mono text-sm">{resetPasswordCredentials.email}</span>
-                                    </div>
+                            {!resetPasswordCredentials.emailSent && (
+                                <div className="rounded-lg bg-yellow-50 p-4 dark:bg-yellow-900/20">
+                                    <p className="text-sm text-yellow-800 dark:text-yellow-200">
+                                        Configure SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, and optional SMTP_FROM on your Firebase Function to email reset links automatically.
+                                    </p>
                                 </div>
-
-                                <div>
-                                    <label className="block text-sm font-medium text-navy-700 dark:text-white mb-1">
-                                        New Password
-                                    </label>
-                                    <div className="flex items-center gap-2 p-3 bg-gray-50 dark:bg-navy-700 rounded-lg">
-                                        <MdLock className="h-4 w-4 text-gray-500" />
-                                        <span className="font-mono text-sm">{resetPasswordCredentials.password}</span>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div className="rounded-lg bg-yellow-50 p-4 dark:bg-yellow-900/20">
-                                <p className="text-sm text-yellow-800 dark:text-yellow-200">
-                                    <strong>Important:</strong> Please save these credentials securely. The staff member will need these to log in to their account.
-                                </p>
-                            </div>
+                            )}
 
                             <button
                                 onClick={() => setResetPasswordCredentials(null)}
                                 className="w-full rounded-lg bg-brand-500 px-4 py-2 text-white hover:bg-brand-600"
                             >
-                                Got it!
+                                Got it
                             </button>
                         </div>
                     </div>

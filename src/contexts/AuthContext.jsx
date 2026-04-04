@@ -5,7 +5,6 @@ import {
     signInWithPopup,
     GoogleAuthProvider,
     signInWithPhoneNumber,
-    RecaptchaVerifier,
     signOut,
     onAuthStateChanged,
     updateProfile
@@ -28,155 +27,102 @@ export const AuthProvider = ({ children }) => {
     const [userRole, setUserRole] = useState(null);
     const [loading, setLoading] = useState(true);
 
-    // Infer role from email for demo/testing convenience
-    const inferRoleFromEmail = (email) => {
-        if (!email) return 'guest';
-        const normalized = email.trim().toLowerCase();
-        if (normalized === 'admin@test.com') return 'super-admin';
-        if (normalized === 'owner@test.com') return 'hotel-owner';
-        if (normalized === 'staff@test.com') return 'hotel-staff';
-        if (normalized === 'guest@test.com') return 'guest';
-        return 'guest';
-    };
-
     const ensureUserDoc = async (user) => {
         if (!user) return null;
         const userRef = doc(db, 'users', user.uid);
         const snapshot = await getDoc(userRef);
         if (!snapshot.exists()) {
-            const role = inferRoleFromEmail(user.email);
             await setDoc(userRef, {
                 uid: user.uid,
                 email: user.email || null,
                 displayName: user.displayName || null,
                 photoURL: user.photoURL || null,
-                role,
+                role: 'guest',
                 isActive: true,
                 createdAt: new Date()
             });
-            return role;
+            return 'guest';
         }
         const data = snapshot.data();
         return data?.role || null;
     };
 
-    // Sign up with email and password
-    const signup = async (email, password, displayName, role = 'guest') => {
-        try {
-            const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-            const user = userCredential.user;
+    /** Self-service signup always creates a guest profile (Firestore rules enforce role). */
+    const signup = async (email, password, displayName) => {
+        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        const user = userCredential.user;
 
-            // Update profile
-            await updateProfile(user, { displayName });
+        await updateProfile(user, { displayName });
 
-            // Create user document in Firestore
-            await setDoc(doc(db, 'users', user.uid), {
-                uid: user.uid,
-                email: user.email,
-                displayName,
-                role,
+        await setDoc(doc(db, 'users', user.uid), {
+            uid: user.uid,
+            email: user.email,
+            displayName,
+            role: 'guest',
+            createdAt: new Date(),
+            isActive: true
+        });
+
+        return userCredential;
+    };
+
+    const login = async (email, password) => {
+        const userCredential = await signInWithEmailAndPassword(auth, email, password);
+        await ensureUserDoc(userCredential.user);
+        return userCredential;
+    };
+
+    const loginWithGoogle = async () => {
+        const provider = new GoogleAuthProvider();
+        const userCredential = await signInWithPopup(auth, provider);
+
+        const userDoc = await getDoc(doc(db, 'users', userCredential.user.uid));
+        if (!userDoc.exists()) {
+            await setDoc(doc(db, 'users', userCredential.user.uid), {
+                uid: userCredential.user.uid,
+                email: userCredential.user.email,
+                displayName: userCredential.user.displayName,
+                photoURL: userCredential.user.photoURL,
+                role: 'guest',
                 createdAt: new Date(),
                 isActive: true
             });
-
-            return userCredential;
-        } catch (error) {
-            throw error;
         }
+
+        return userCredential;
     };
 
-    // Sign in with email and password
-    const login = async (email, password) => {
-        try {
-            const userCredential = await signInWithEmailAndPassword(auth, email, password);
-            // Ensure Firestore user doc exists with a role
-            await ensureUserDoc(userCredential.user);
-            return userCredential;
-        } catch (error) {
-            throw error;
-        }
-    };
-
-    // Sign in with Google
-    const loginWithGoogle = async () => {
-        try {
-            const provider = new GoogleAuthProvider();
-            const userCredential = await signInWithPopup(auth, provider);
-
-            // Check if user exists in Firestore, if not create them
-            const userDoc = await getDoc(doc(db, 'users', userCredential.user.uid));
-            if (!userDoc.exists()) {
-                await setDoc(doc(db, 'users', userCredential.user.uid), {
-                    uid: userCredential.user.uid,
-                    email: userCredential.user.email,
-                    displayName: userCredential.user.displayName,
-                    photoURL: userCredential.user.photoURL,
-                    role: 'guest',
-                    createdAt: new Date(),
-                    isActive: true
-                });
-            }
-
-            return userCredential;
-        } catch (error) {
-            throw error;
-        }
-    };
-
-    // Sign in with phone number (for India)
     const loginWithPhone = async (phoneNumber, appVerifier) => {
-        try {
-            const confirmationResult = await signInWithPhoneNumber(auth, phoneNumber, appVerifier);
-            return confirmationResult;
-        } catch (error) {
-            throw error;
-        }
+        return signInWithPhoneNumber(auth, phoneNumber, appVerifier);
     };
 
-    // Verify phone OTP
     const verifyPhoneOTP = async (confirmationResult, otp) => {
-        try {
-            const userCredential = await confirmationResult.confirm(otp);
+        const userCredential = await confirmationResult.confirm(otp);
 
-            // Check if user exists in Firestore, if not create them
-            const userDoc = await getDoc(doc(db, 'users', userCredential.user.uid));
-            if (!userDoc.exists()) {
-                await setDoc(doc(db, 'users', userCredential.user.uid), {
-                    uid: userCredential.user.uid,
-                    phoneNumber: userCredential.user.phoneNumber,
-                    role: 'guest',
-                    createdAt: new Date(),
-                    isActive: true
-                });
-            }
-
-            return userCredential;
-        } catch (error) {
-            throw error;
+        const userDoc = await getDoc(doc(db, 'users', userCredential.user.uid));
+        if (!userDoc.exists()) {
+            await setDoc(doc(db, 'users', userCredential.user.uid), {
+                uid: userCredential.user.uid,
+                phoneNumber: userCredential.user.phoneNumber,
+                role: 'guest',
+                createdAt: new Date(),
+                isActive: true
+            });
         }
+
+        return userCredential;
     };
 
-    // Sign out
     const logout = async () => {
-        try {
-            await signOut(auth);
-        } catch (error) {
-            throw error;
-        }
+        await signOut(auth);
     };
 
-    // Get user role from Firestore
     const getUserRole = async (uid) => {
         try {
-            console.log('Fetching user role for UID:', uid);
             const userDoc = await getDoc(doc(db, 'users', uid));
-            console.log('User document exists:', userDoc.exists());
             if (userDoc.exists()) {
-                const userData = userDoc.data();
-                console.log('User document data:', userData);
-                return userData.role;
+                return userDoc.data().role;
             }
-            console.log('User document does not exist in Firestore');
             return null;
         } catch (error) {
             console.error('Error getting user role:', error);
@@ -184,28 +130,19 @@ export const AuthProvider = ({ children }) => {
         }
     };
 
-    // Update user role (for admin functions)
     const updateUserRole = async (uid, newRole) => {
-        try {
-            await setDoc(doc(db, 'users', uid), { role: newRole }, { merge: true });
-            if (currentUser && currentUser.uid === uid) {
-                setUserRole(newRole);
-            }
-        } catch (error) {
-            throw error;
+        await setDoc(doc(db, 'users', uid), { role: newRole }, { merge: true });
+        if (currentUser && currentUser.uid === uid) {
+            setUserRole(newRole);
         }
     };
 
-    // Listen for auth state changes
     useEffect(() => {
         const unsubscribe = onAuthStateChanged(auth, async (user) => {
-            console.log('Auth state changed:', user ? user.email : 'No user');
             if (user) {
                 setCurrentUser(user);
-                // Create user doc if missing and read role
                 const ensuredRole = await ensureUserDoc(user);
                 const role = ensuredRole ?? (await getUserRole(user.uid));
-                console.log('User role fetched:', role);
                 setUserRole(role);
             } else {
                 setCurrentUser(null);

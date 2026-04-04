@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
-import { collection, getDocs, doc, updateDoc, addDoc, query, orderBy, where, serverTimestamp } from "firebase/firestore";
-import { db } from "../../../firebase/config";
+import { collection, getDocs, doc, updateDoc, query, orderBy, where } from "firebase/firestore";
+import { httpsCallable } from "firebase/functions";
+import { db, functions } from "../../../firebase/config";
 import ComplexTable from "views/admin/default/components/ComplexTable";
 import {
     MdEdit,
@@ -14,10 +15,19 @@ const HotelManagement = () => {
     const [loading, setLoading] = useState(true);
     const [selectedHotel, setSelectedHotel] = useState(null);
     const [showModal, setShowModal] = useState(false);
+    const [saving, setSaving] = useState(false);
+    const [saveError, setSaveError] = useState("");
 
-    const [owners, setOwners] = useState([]);
     const [ownerIdToUser, setOwnerIdToUser] = useState({});
-    const [newHotel, setNewHotel] = useState({ name: "", ownerName: "", ownerEmail: "", ownerPhone: "", address: "", phone: "", email: "" });
+    const [newHotel, setNewHotel] = useState({
+        name: "",
+        ownerName: "",
+        ownerEmail: "",
+        ownerPhone: "",
+        address: "",
+        phone: "",
+        email: "",
+    });
 
     useEffect(() => {
         fetchHotels();
@@ -26,12 +36,11 @@ const HotelManagement = () => {
 
     const fetchOwners = async () => {
         try {
-            const ownersQuery = query(collection(db, "users"), where("role", "in", ["hotel-owner", "hotel_owner"]));
+            const ownersQuery = query(collection(db, "users"), where("role", "==", "hotel_owner"));
             const snap = await getDocs(ownersQuery);
             const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
             const map = {};
             list.forEach(u => { map[u.id] = u; });
-            setOwners(list);
             setOwnerIdToUser(map);
         } catch (e) {
             console.error("Error fetching owners:", e);
@@ -65,56 +74,38 @@ const HotelManagement = () => {
         }
     };
 
-    const ensureOwnerByEmail = async (email, displayName, phoneNumber) => {
-        const snap = await getDocs(query(collection(db, 'users'), where('email', '==', email)));
-        if (!snap.empty) {
-            const existing = snap.docs[0];
-            const existingId = existing.id;
-            try {
-                await updateDoc(doc(db, 'users', existingId), {
-                    role: 'hotel-owner',
-                    displayName: displayName || existing.data().displayName || '',
-                    phoneNumber: phoneNumber || existing.data().phoneNumber || '',
-                    isActive: true,
-                });
-            } catch { }
-            return existingId;
-        }
-        const payload = {
-            email,
-            displayName: displayName || '',
-            phoneNumber: phoneNumber || '',
-            role: 'hotel-owner',
-            isActive: true,
-            createdAt: serverTimestamp(),
-        };
-        const ref = await addDoc(collection(db, 'users'), payload);
-        return ref.id;
-    };
-
     const saveNewHotel = async () => {
         if (!newHotel.name || !newHotel.ownerEmail) return;
+        setSaving(true);
+        setSaveError("");
         try {
-            const ownerId = await ensureOwnerByEmail(newHotel.ownerEmail.trim(), newHotel.ownerName.trim(), newHotel.ownerPhone.trim());
-            const payload = {
-                name: newHotel.name,
-                ownerId,
-                address: newHotel.address || "",
-                phone: newHotel.phone || "",
-                email: newHotel.email || "",
-                isActive: true,
-                createdAt: serverTimestamp(),
-                amenities: []
-            };
-            const docRef = await addDoc(collection(db, "hotels"), payload);
-            // Link hotelId on owner user document for downstream features
-            await updateDoc(doc(db, 'users', ownerId), { hotelId: docRef.id });
+            const superAdminCreateHotel = httpsCallable(functions, "superAdminCreateHotel");
+            await superAdminCreateHotel({
+                ownerEmail: newHotel.ownerEmail.trim(),
+                hotel: {
+                    name: newHotel.name.trim(),
+                    ownerName: newHotel.ownerName.trim(),
+                    ownerPhone: newHotel.ownerPhone.trim(),
+                    address: newHotel.address || "",
+                    phone: newHotel.phone || "",
+                    email: newHotel.email || "",
+                    isActive: true,
+                    amenities: [],
+                    totalRooms: 0,
+                    availableRooms: 0,
+                    totalRevenue: 0,
+                },
+            });
             setShowModal(false);
             setNewHotel({ name: "", ownerName: "", ownerEmail: "", ownerPhone: "", address: "", phone: "", email: "" });
-            fetchHotels();
-            fetchOwners();
+            await fetchHotels();
+            await fetchOwners();
         } catch (e) {
+            const msg = e.message || String(e);
+            setSaveError(msg);
             console.error("Error saving hotel:", e);
+        } finally {
+            setSaving(false);
         }
     };
 
@@ -176,7 +167,7 @@ const HotelManagement = () => {
         <div>
             <div className="mt-6 mb-6 flex items-center justify-between">
                 <h2 className="text-2xl font-bold text-navy-700 dark:text-white">Hotel Management</h2>
-                <button onClick={() => { setSelectedHotel(null); setShowModal(true); }} className="flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-white hover:bg-brand-600">
+                <button onClick={() => { setSelectedHotel(null); setSaveError(""); setShowModal(true); }} className="flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-white hover:bg-brand-600">
                     <MdAdd className="h-4 w-4" />
                     Add Hotel
                 </button>
@@ -222,34 +213,40 @@ const HotelManagement = () => {
                                 </>
                             ) : (
                                 <>
+                                    <p className="text-sm text-gray-600 dark:text-gray-300">
+                                        The owner must already have signed up in Firebase Authentication with this email.
+                                    </p>
+                                    {saveError && (
+                                        <div className="rounded-lg bg-red-50 p-2 text-sm text-red-700 dark:bg-red-900/30 dark:text-red-200">{saveError}</div>
+                                    )}
                                     <div>
                                         <label className="text-sm font-medium text-gray-600">Hotel Name</label>
-                                        <input value={newHotel.name} onChange={(e) => setNewHotel({ ...newHotel, name: e.target.value })} className="mt-1 w-full rounded-md border p-2" placeholder="Hotel Name" />
+                                        <input value={newHotel.name} onChange={(e) => setNewHotel({ ...newHotel, name: e.target.value })} className="mt-1 w-full rounded-md border p-2 dark:bg-navy-900 dark:text-white" placeholder="Hotel Name" />
                                     </div>
                                     <div>
                                         <label className="text-sm font-medium text-gray-600">Owner Name</label>
-                                        <input value={newHotel.ownerName} onChange={(e) => setNewHotel({ ...newHotel, ownerName: e.target.value })} className="mt-1 w-full rounded-md border p-2" placeholder="Owner full name" />
+                                        <input value={newHotel.ownerName} onChange={(e) => setNewHotel({ ...newHotel, ownerName: e.target.value })} className="mt-1 w-full rounded-md border p-2 dark:bg-navy-900 dark:text-white" placeholder="Owner full name" />
                                     </div>
                                     <div>
                                         <label className="text-sm font-medium text-gray-600">Owner Email</label>
-                                        <input type="email" value={newHotel.ownerEmail} onChange={(e) => setNewHotel({ ...newHotel, ownerEmail: e.target.value })} className="mt-1 w-full rounded-md border p-2" placeholder="owner@example.com" />
+                                        <input type="email" value={newHotel.ownerEmail} onChange={(e) => setNewHotel({ ...newHotel, ownerEmail: e.target.value })} className="mt-1 w-full rounded-md border p-2 dark:bg-navy-900 dark:text-white" placeholder="owner@example.com" />
                                     </div>
                                     <div>
                                         <label className="text-sm font-medium text-gray-600">Owner Phone</label>
-                                        <input value={newHotel.ownerPhone} onChange={(e) => setNewHotel({ ...newHotel, ownerPhone: e.target.value })} className="mt-1 w-full rounded-md border p-2" placeholder="+91..." />
+                                        <input value={newHotel.ownerPhone} onChange={(e) => setNewHotel({ ...newHotel, ownerPhone: e.target.value })} className="mt-1 w-full rounded-md border p-2 dark:bg-navy-900 dark:text-white" placeholder="+91..." />
                                     </div>
                                     <div>
                                         <label className="text-sm font-medium text-gray-600">Address</label>
-                                        <input value={newHotel.address} onChange={(e) => setNewHotel({ ...newHotel, address: e.target.value })} className="mt-1 w-full rounded-md border p-2" placeholder="Address" />
+                                        <input value={newHotel.address} onChange={(e) => setNewHotel({ ...newHotel, address: e.target.value })} className="mt-1 w-full rounded-md border p-2 dark:bg-navy-900 dark:text-white" placeholder="Address" />
                                     </div>
                                     <div className="grid grid-cols-2 gap-3">
                                         <div>
                                             <label className="text-sm font-medium text-gray-600">Phone</label>
-                                            <input value={newHotel.phone} onChange={(e) => setNewHotel({ ...newHotel, phone: e.target.value })} className="mt-1 w-full rounded-md border p-2" placeholder="Phone" />
+                                            <input value={newHotel.phone} onChange={(e) => setNewHotel({ ...newHotel, phone: e.target.value })} className="mt-1 w-full rounded-md border p-2 dark:bg-navy-900 dark:text-white" placeholder="Phone" />
                                         </div>
                                         <div>
                                             <label className="text-sm font-medium text-gray-600">Email</label>
-                                            <input value={newHotel.email} onChange={(e) => setNewHotel({ ...newHotel, email: e.target.value })} className="mt-1 w-full rounded-md border p-2" placeholder="Email" />
+                                            <input value={newHotel.email} onChange={(e) => setNewHotel({ ...newHotel, email: e.target.value })} className="mt-1 w-full rounded-md border p-2 dark:bg-navy-900 dark:text-white" placeholder="Email" />
                                         </div>
                                     </div>
                                 </>
@@ -261,7 +258,7 @@ const HotelManagement = () => {
                             {selectedHotel ? (
                                 <button onClick={() => { toggleHotelStatus(selectedHotel.id, selectedHotel.isActive); setShowModal(false); }} className={`flex-1 rounded-lg px-4 py-2 text-white ${selectedHotel.isActive ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600'}`}>{selectedHotel.isActive ? 'Deactivate' : 'Activate'}</button>
                             ) : (
-                                <button onClick={saveNewHotel} className="flex-1 rounded-lg bg-brand-500 px-4 py-2 text-white hover:bg-brand-600">Save Hotel</button>
+                                <button type="button" onClick={saveNewHotel} disabled={saving} className="flex-1 rounded-lg bg-brand-500 px-4 py-2 text-white hover:bg-brand-600 disabled:opacity-50">{saving ? 'Saving…' : 'Save Hotel'}</button>
                             )}
                         </div>
                     </div>

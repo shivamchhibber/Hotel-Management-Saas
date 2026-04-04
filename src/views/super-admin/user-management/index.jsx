@@ -2,14 +2,12 @@ import React, { useState, useEffect } from "react";
 import { collection, getDocs, doc, updateDoc, query, orderBy } from "firebase/firestore";
 import { db } from "../../../firebase/config";
 import ComplexTable from "views/admin/default/components/ComplexTable";
-import { columnsDataComplex } from "views/admin/default/variables/columnsData";
 import {
-    MdPeople,
     MdEdit,
     MdCheckCircle,
     MdCancel,
-    MdBusiness
 } from "react-icons/md";
+import { normalizeRole, formatRoleLabel } from "utils/roleUtils";
 
 const UserManagement = () => {
     const [users, setUsers] = useState([]);
@@ -57,43 +55,19 @@ const UserManagement = () => {
         }
     };
 
-    const normalizeRole = (role) => String(role || '').trim().toLowerCase().replace(/_/g, '-');
-
     const getRoleColor = (role) => {
         const r = normalizeRole(role);
-        switch (role) {
+        switch (r) {
             case 'super_admin':
-            case 'super-admin':
                 return 'bg-purple-100 text-purple-800';
             case 'hotel_owner':
-            case 'hotel-owner':
                 return 'bg-blue-100 text-blue-800';
             case 'hotel_staff':
-            case 'hotel-staff':
                 return 'bg-green-100 text-green-800';
             case 'guest':
                 return 'bg-gray-100 text-gray-800';
             default:
                 return 'bg-gray-100 text-gray-800';
-        }
-    };
-
-    const formatRole = (role) => {
-        const r = normalizeRole(role);
-        switch (role) {
-            case 'super_admin':
-            case 'super-admin':
-                return 'Super Admin';
-            case 'hotel_owner':
-            case 'hotel-owner':
-                return 'Hotel Owner';
-            case 'hotel_staff':
-            case 'hotel-staff':
-                return 'Hotel Staff';
-            case 'guest':
-                return 'Guest';
-            default:
-                return role;
         }
     };
 
@@ -114,7 +88,7 @@ const UserManagement = () => {
                 : (user.createdAt ? new Date(user.createdAt).toLocaleString() : ''),
             role: (
                 <span className={`px-2 py-1 rounded-full text-xs font-medium ${getRoleColor(user.role)}`}>
-                    {formatRole(user.role)}
+                    {formatRoleLabel(user.role)}
                 </span>
             ),
             status: (
@@ -207,7 +181,7 @@ const UserManagement = () => {
                             <div>
                                 <label className="text-sm font-medium text-gray-600">Role</label>
                                 <span className={`px-2 py-1 rounded-full text-xs font-medium ${getRoleColor(selectedUser.role)}`}>
-                                    {formatRole(selectedUser.role)}
+                                    {formatRoleLabel(selectedUser.role)}
                                 </span>
                             </div>
 

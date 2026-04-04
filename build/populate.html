@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Populate Database</title>
+    <script src="https://www.gstatic.com/firebasejs/9.0.0/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.0.0/firebase-firestore.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.0.0/firebase-auth.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+
+        button {
+            padding: 10px 20px;
+            margin: 10px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #0056b3;
+        }
+
+        .log {
+            background: #f8f9fa;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+            white-space: pre-wrap;
+        }
+
+        .success {
+            color: green;
+        }
+
+        .error {
+            color: red;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Database Population Tool</h1>
+    <button onclick="populateDatabase()">Populate Database</button>
+    <button onclick="clearLogs()">Clear Logs</button>
+    <div id="logs" class="log"></div>
+
+    <script>
+        // Firebase configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyCmbBgb9jd97dZykUbIDzD4Oo6FkXh00xA",
+            authDomain: "botarmy-hotel-management.firebaseapp.com",
+            projectId: "botarmy-hotel-management",
+            storageBucket: "botarmy-hotel-management.firebasestorage.app",
+            messagingSenderId: "1012001482685",
+            appId: "1:1012001482685:web:07ecea858a21336caed4d4",
+            measurementId: "G-C2SV5Z2GKZ"
+        };
+
+        // Initialize Firebase
+        firebase.initializeApp(firebaseConfig);
+
+        function log(message, type = 'info') {
+            const logs = document.getElementById('logs');
+            const timestamp = new Date().toLocaleTimeString();
+            const className = type === 'success' ? 'success' : type === 'error' ? 'error' : '';
+            logs.innerHTML += `<div class="${className}">[${timestamp}] ${message}</div>`;
+            logs.scrollTop = logs.scrollHeight;
+        }
+
+        function clearLogs() {
+            document.getElementById('logs').innerHTML = '';
+        }
+
+        function populateDatabase() {
+            log('🚀 Starting to populate Firestore database...');
+
+            // Get db instance inside the function
+            const db = firebase.firestore();
+
+            // Create users one by one
+            createUser(db, 'super-admin-001', 'admin@test.com', 'Super Admin', 'super-admin')
+                .then(() => createUser(db, 'hotel-owner-001', 'owner@test.com', 'Hotel Owner', 'hotel-owner'))
+                .then(() => createUser(db, 'hotel-staff-001', 'staff@test.com', 'Hotel Staff', 'hotel-staff'))
+                .then(() => createUser(db, 'guest-001', 'guest@test.com', 'Guest User', 'guest'))
+                .then(() => {
+                    log('🎉 All users created successfully!', 'success');
+                    log('Test credentials:', 'success');
+                    log('Super Admin: admin@test.com / password123', 'success');
+                    log('Hotel Owner: owner@test.com / password123', 'success');
+                    log('Hotel Staff: staff@test.com / password123', 'success');
+                    log('Guest: guest@test.com / password123', 'success');
+                })
+                .catch(error => {
+                    log('❌ Error: ' + error.message, 'error');
+                });
+        }
+
+        function createUser(db, uid, email, displayName, role) {
+            return db.collection('users').doc(uid).set({
+                uid: uid,
+                email: email,
+                displayName: displayName,
+                role: role,
+                isActive: true,
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            }).then(() => {
+                log('✅ ' + displayName + ' created', 'success');
+            });
+        }
+    </script>
+</body>
+
+</html>

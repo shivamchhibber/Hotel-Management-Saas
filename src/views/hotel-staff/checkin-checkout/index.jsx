@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { collection, getDocs, addDoc, updateDoc, query, where, orderBy } from "firebase/firestore";
+import { collection, getDocs, addDoc, updateDoc, doc, query, where, orderBy } from "firebase/firestore";
 import { db } from "../../../firebase/config";
 import { useAuth } from "contexts/AuthContext";
 import InputField from "components/fields/InputField";
@@ -139,7 +139,7 @@ const CheckinCheckout = () => {
             if (!guest) return;
 
             // Update guest record
-            await updateDoc(collection(db, "guests"), guestId, {
+            await updateDoc(doc(db, "guests", guestId), {
                 isCheckedIn: false,
                 checkOutDate: new Date(),
                 updatedAt: new Date()

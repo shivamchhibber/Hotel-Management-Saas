@@ -72,53 +72,52 @@ A comprehensive Hotel Management System built with React, Firebase, and Tailwind
    npm install
    ```
 
-3. **Set up Firebase**
+3. **Environment variables**
+
+   Copy [.env.example](.env.example) to `.env.local` and set `REACT_APP_FIREBASE_*` values from your Firebase project. Set `REACT_APP_FIREBASE_FUNCTIONS_REGION` to match deployed Cloud Functions (default `us-central1`).
+
+4. **Bootstrap roles (greenfield)**
+
+   - **Option A:** Sign up once in the app, then in Firebase Console set `users/{yourAuthUid}.role` to `super_admin`.
+   - **Option B:** Run `npm run seed:admin` with `GOOGLE_APPLICATION_CREDENTIALS` pointing at a service account JSON (see [scripts/seed-admin.js](scripts/seed-admin.js)). Change default passwords immediately.
+
+   Self-service sign-up always creates `guest` accounts. A super admin attaches hotels to owners via **Hotel Management** (callable `superAdminCreateHotel`); the owner must already exist in Firebase Authentication.
+
+5. **Cloud Functions (staff & hotels)**
+
+   Deploy functions from the `functions` directory. For staff password reset emails, configure SMTP on the function environment: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, optional `SMTP_FROM`.
+
+6. **Set up Firebase**
    - Create a new Firebase project at [Firebase Console](https://console.firebase.google.com)
    - Enable Authentication with Google, Email/Password, and Phone providers
    - Enable Firestore Database
-   - Get your Firebase configuration
+   - Put web app config in `.env.local` as `REACT_APP_FIREBASE_*` (see `.env.example`). The app falls back to built-in defaults only for local convenience.
 
-4. **Configure Firebase**
-   - Open `src/firebase/config.js`
-   - Replace the placeholder configuration with your actual Firebase config:
-   ```javascript
-   const firebaseConfig = {
-     apiKey: "your-api-key",
-     authDomain: "your-project.firebaseapp.com",
-     projectId: "your-project-id",
-     storageBucket: "your-project.appspot.com",
-     messagingSenderId: "123456789",
-     appId: "your-app-id"
-   };
-   ```
+7. **Set up Firestore Security Rules**
+   - Deploy `firestore.rules` and `firestore.indexes.json` (see `firebase.json`).
 
-5. **Set up Firestore Security Rules**
-   - Copy the rules from `firestore.rules` to your Firebase Console
-   - Deploy the rules to your Firestore database
-
-6. **Seed Sample Data (Optional)**
+8. **Sample data (optional)**
    ```bash
-   npm run seed
+   npm run seed:admin
    ```
-   This will create sample users, hotels, and booking data for testing.
+   Requires a service account (`GOOGLE_APPLICATION_CREDENTIALS`). The legacy `npm run seed` command is disabled under production-style rules.
 
-7. **Start the development server**
+9. **Start the development server**
    ```bash
    npm start
    ```
 
-8. **Open your browser**
+10. **Open your browser**
    Navigate to `http://localhost:3000`
 
 ## Sample Data
 
-The seed script creates the following sample data:
+`npm run seed:admin` (optional) creates Auth users and Firestore documents with these defaults unless you override env vars in `scripts/seed-admin.js`:
 
 - **Super Admin**: admin@hotelmanagement.com
 - **Hotel Owner**: owner@luxuryhotel.com
 - **Hotel Staff**: staff@luxuryhotel.com
-- **Sample Hotel**: Luxury Palace Hotel (Mumbai)
-- **Sample Guests**: 3 guests with booking history
+- **Sample Hotel**: Luxury Palace Hotel (document id `hotel-001`)
 
 ## Project Structure
 

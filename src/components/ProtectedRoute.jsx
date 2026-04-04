@@ -1,11 +1,7 @@
 import React from 'react';
 import { Navigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-
-const normalizeRole = (role) => {
-    if (!role) return null;
-    return String(role).trim().toLowerCase().replace(/_/g, '-');
-};
+import { normalizeRole } from 'utils/roleUtils';
 
 const ProtectedRoute = ({ children, requiredRole, fallbackPath = '/auth/sign-in' }) => {
     const { currentUser, userRole, loading } = useAuth();
@@ -25,13 +21,12 @@ const ProtectedRoute = ({ children, requiredRole, fallbackPath = '/auth/sign-in'
     }
 
     if (normalizedRequiredRole && normalizedUserRole !== normalizedRequiredRole) {
-        // Redirect to appropriate dashboard based on user role
         switch (normalizedUserRole) {
-            case 'super-admin':
+            case 'super_admin':
                 return <Navigate to="/super-admin" replace />;
-            case 'hotel-owner':
+            case 'hotel_owner':
                 return <Navigate to="/hotel-owner" replace />;
-            case 'hotel-staff':
+            case 'hotel_staff':
                 return <Navigate to="/hotel-staff" replace />;
             case 'guest':
                 return <Navigate to="/guest" replace />;

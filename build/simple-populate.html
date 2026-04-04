@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple Populate</title>
+    <script src="https://www.gstatic.com/firebasejs/9.0.0/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.0.0/firebase-firestore.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+
+        button {
+            padding: 10px 20px;
+            margin: 10px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        .log {
+            background: #f8f9fa;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Simple Database Population</h1>
+    <button onclick="createUsers()">Create Users Only</button>
+    <div id="logs" class="log"></div>
+
+    <script>
+        const firebaseConfig = {
+            apiKey: "AIzaSyCmbBgb9jd97dZykUbIDzD4Oo6FkXh00xA",
+            authDomain: "botarmy-hotel-management.firebaseapp.com",
+            projectId: "botarmy-hotel-management",
+            storageBucket: "botarmy-hotel-management.firebasestorage.app",
+            messagingSenderId: "1012001482685",
+            appId: "1:1012001482685:web:07ecea858a21336caed4d4"
+        };
+
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+
+        function log(message) {
+            document.getElementById('logs').innerHTML += message + '\n';
+        }
+
+        async function createUsers() {
+            try {
+                log('Creating users...');
+
+                // Super Admin
+                await db.collection('users').doc('super-admin-001').set({
+                    uid: 'super-admin-001',
+                    email: 'admin@test.com',
+                    displayName: 'Super Admin',
+                    role: 'super-admin',
+                    isActive: true,
+                    createdAt: new Date()
+                });
+                log('✅ Super Admin created');
+
+                // Hotel Owner
+                await db.collection('users').doc('hotel-owner-001').set({
+                    uid: 'hotel-owner-001',
+                    email: 'owner@test.com',
+                    displayName: 'Hotel Owner',
+                    role: 'hotel-owner',
+                    isActive: true,
+                    createdAt: new Date()
+                });
+                log('✅ Hotel Owner created');
+
+                // Hotel Staff
+                await db.collection('users').doc('hotel-staff-001').set({
+                    uid: 'hotel-staff-001',
+                    email: 'staff@test.com',
+                    displayName: 'Hotel Staff',
+                    role: 'hotel-staff',
+                    isActive: true,
+                    createdAt: new Date()
+                });
+                log('✅ Hotel Staff created');
+
+                // Guest
+                await db.collection('users').doc('guest-001').set({
+                    uid: 'guest-001',
+                    email: 'guest@test.com',
+                    displayName: 'Guest User',
+                    role: 'guest',
+                    isActive: true,
+                    createdAt: new Date()
+                });
+                log('✅ Guest created');
+
+                log('🎉 All users created successfully!');
+                log('Now you can test login with:');
+                log('admin@test.com / password123');
+
+            } catch (error) {
+                log('❌ Error: ' + error.message);
+            }
+        }
+    </script>
+</body>
+
+</html>

@@ -34,6 +34,7 @@
     "eject": "react-scripts eject",
     "pretty": "prettier --write \"./**/*.{js,jsx,json}\"",
     "seed": "node src/scripts/runSeed.js",
+    "seed:admin": "node scripts/seed-admin.js",
     "populate": "node populate-db.js"
   },
   "eslintConfig": {
@@ -56,6 +57,7 @@
   },
   "devDependencies": {
     "autoprefixer": "^10.4.8",
+    "firebase-admin": "^11.11.1",
     "postcss": "^8.4.16",
     "prettier": "^2.8.3",
     "prettier-plugin-tailwindcss": "^0.2.1",

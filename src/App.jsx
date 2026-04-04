@@ -1,6 +1,7 @@
 import React from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "contexts/AuthContext";
+import { normalizeRole } from "utils/roleUtils";
 
 import RtlLayout from "layouts/rtl";
 import AdminLayout from "layouts/admin";
@@ -15,13 +16,13 @@ const App = () => {
     const { currentUser, userRole, loading } = useAuth();
     if (loading) return null;
     if (!currentUser) return <Navigate to="/auth/sign-in" replace />;
-    switch (String(userRole).trim().toLowerCase().replace(/_/g, '-')) {
-      case 'super-admin':
+    switch (normalizeRole(userRole)) {
+      case 'super_admin':
         return <Navigate to="/super-admin/dashboard" replace />;
-      case 'hotel-owner':
+      case 'hotel_owner':
         return <Navigate to="/hotel-owner/dashboard" replace />;
-              case 'hotel-staff':
-                return <Navigate to="/hotel-staff/profile" replace />;
+      case 'hotel_staff':
+        return <Navigate to="/hotel-staff/profile" replace />;
       case 'guest':
         return <Navigate to="/guest/my-stays" replace />;
       default:
