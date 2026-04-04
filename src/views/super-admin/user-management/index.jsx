@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { collection, getDocs, doc, updateDoc, query, orderBy } from "firebase/firestore";
+import { collection, getDocs, doc, updateDoc } from "firebase/firestore";
 import { db } from "../../../firebase/config";
 import ComplexTable from "views/admin/default/components/ComplexTable";
 import {
@@ -8,6 +8,16 @@ import {
     MdCancel,
 } from "react-icons/md";
 import { normalizeRole, formatRoleLabel } from "utils/roleUtils";
+
+function createdAtMs(data) {
+    const c = data?.createdAt;
+    if (!c) return 0;
+    if (typeof c.toMillis === "function") return c.toMillis();
+    if (typeof c.toDate === "function") return c.toDate().getTime();
+    if (typeof c.seconds === "number") return c.seconds * 1000;
+    if (c instanceof Date) return c.getTime();
+    return 0;
+}
 
 const UserManagement = () => {
     const [users, setUsers] = useState([]);
@@ -22,12 +32,10 @@ const UserManagement = () => {
     const fetchUsers = async () => {
         try {
             setLoading(true);
-            const usersQuery = query(collection(db, "users"), orderBy("createdAt", "desc"));
-            const usersSnapshot = await getDocs(usersQuery);
-            const usersData = usersSnapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data()
-            }));
+            const usersSnapshot = await getDocs(collection(db, "users"));
+            const usersData = usersSnapshot.docs
+                .map((d) => ({ id: d.id, ...d.data() }))
+                .sort((a, b) => createdAtMs(b) - createdAtMs(a));
             setUsers(usersData);
         } catch (error) {
             console.error("Error fetching users:", error);

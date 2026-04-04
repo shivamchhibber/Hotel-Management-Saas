@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { collection, getDocs, doc, updateDoc, query, orderBy, where } from "firebase/firestore";
+import { collection, getDocs, doc, updateDoc, query, where } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { db, functions } from "../../../firebase/config";
 import ComplexTable from "views/admin/default/components/ComplexTable";
@@ -9,6 +9,16 @@ import {
     MdCancel,
     MdAdd
 } from "react-icons/md";
+
+function createdAtMs(data) {
+    const c = data?.createdAt;
+    if (!c) return 0;
+    if (typeof c.toMillis === "function") return c.toMillis();
+    if (typeof c.toDate === "function") return c.toDate().getTime();
+    if (typeof c.seconds === "number") return c.seconds * 1000;
+    if (c instanceof Date) return c.getTime();
+    return 0;
+}
 
 const HotelManagement = () => {
     const [hotels, setHotels] = useState([]);
@@ -40,7 +50,10 @@ const HotelManagement = () => {
             const snap = await getDocs(ownersQuery);
             const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
             const map = {};
-            list.forEach(u => { map[u.id] = u; });
+            list.forEach((u) => {
+                map[u.id] = u;
+                if (u.uid) map[u.uid] = u;
+            });
             setOwnerIdToUser(map);
         } catch (e) {
             console.error("Error fetching owners:", e);
@@ -50,9 +63,10 @@ const HotelManagement = () => {
     const fetchHotels = async () => {
         try {
             setLoading(true);
-            const hotelsQuery = query(collection(db, "hotels"), orderBy("createdAt", "desc"));
-            const hotelsSnapshot = await getDocs(hotelsQuery);
-            const hotelsData = hotelsSnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+            const hotelsSnapshot = await getDocs(collection(db, "hotels"));
+            const hotelsData = hotelsSnapshot.docs
+                .map((d) => ({ id: d.id, ...d.data() }))
+                .sort((a, b) => createdAtMs(b) - createdAtMs(a));
             setHotels(hotelsData);
         } catch (error) {
             console.error("Error fetching hotels:", error);
@@ -79,16 +93,17 @@ const HotelManagement = () => {
         setSaving(true);
         setSaveError("");
         try {
+            const t = (v) => (typeof v === "string" ? v : "").trim();
             const superAdminCreateHotel = httpsCallable(functions, "superAdminCreateHotel");
             await superAdminCreateHotel({
-                ownerEmail: newHotel.ownerEmail.trim(),
+                ownerEmail: t(newHotel.ownerEmail),
                 hotel: {
-                    name: newHotel.name.trim(),
-                    ownerName: newHotel.ownerName.trim(),
-                    ownerPhone: newHotel.ownerPhone.trim(),
-                    address: newHotel.address || "",
-                    phone: newHotel.phone || "",
-                    email: newHotel.email || "",
+                    name: t(newHotel.name),
+                    ownerName: t(newHotel.ownerName),
+                    ownerPhone: t(newHotel.ownerPhone),
+                    address: t(newHotel.address),
+                    phone: t(newHotel.phone),
+                    email: t(newHotel.email),
                     isActive: true,
                     amenities: [],
                     totalRooms: 0,
@@ -101,8 +116,17 @@ const HotelManagement = () => {
             await fetchHotels();
             await fetchOwners();
         } catch (e) {
-            const msg = e.message || String(e);
-            setSaveError(msg);
+            const code = String(e?.code || "");
+            const msg = String(e?.message || e || "");
+            const details = e?.details != null ? String(e.details) : "";
+            const combined = [code && code !== "unknown" ? code : "", msg, details]
+                .filter(Boolean)
+                .join(" — ");
+            const display =
+                code === "functions/internal" || msg === "internal"
+                    ? `Callable failed (${combined || "functions/internal"}). Deploy latest functions (firebase deploy --only functions), then check Functions → Logs for superAdminCreateHotel. Common causes: owner email not in Authentication, or an error during Firestore write.`
+                    : combined || msg;
+            setSaveError(display);
             console.error("Error saving hotel:", e);
         } finally {
             setSaving(false);

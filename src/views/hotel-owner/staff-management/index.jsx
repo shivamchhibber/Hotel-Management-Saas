@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from "react";
-import { collection, getDocs, doc, updateDoc, query, where, limit } from "firebase/firestore";
+import { collection, getDocs, doc, updateDoc, query, where } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { db, functions } from "../../../firebase/config";
 import { useAuth } from "contexts/AuthContext";
+import { resolveHotelIdForOwner } from "utils/hotelOwnerUtils";
 import ComplexTable from "views/admin/default/components/ComplexTable";
 import InputField from "components/fields/InputField";
 import {
@@ -48,16 +49,11 @@ const StaffManagement = () => {
         try {
             setLoading(true);
 
-            // Resolve current owner's users doc id (not auth uid)
-            const ownerSnap = await getDocs(query(collection(db, "users"), where("uid", "==", currentUser.uid), limit(1)));
-            const ownerDocId = ownerSnap.docs[0]?.id;
-
-            // Find the hotel owned by this owner document id
-            const hotelSnap = await getDocs(query(collection(db, "hotels"), where("ownerId", "==", ownerDocId), limit(1)));
-            const hotelId = hotelSnap.docs[0]?.id;
+            const hotelId = await resolveHotelIdForOwner(currentUser.uid);
 
             if (!hotelId) {
                 console.error("No hotel ID found for user");
+                setStaff([]);
                 return;
             }
 
@@ -79,8 +75,6 @@ const StaffManagement = () => {
                 return dateB - dateA; // Most recent first
             });
             
-            console.log('Fetched staff data:', staffData);
-            console.log('Hotel ID:', hotelId);
             setStaff(staffData);
         } catch (error) {
             console.error("Error fetching staff:", error);

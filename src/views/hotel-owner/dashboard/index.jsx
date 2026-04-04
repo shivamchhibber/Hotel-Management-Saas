@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { collection, getDocs, query, where, orderBy } from "firebase/firestore";
 import { db } from "../../../firebase/config";
 import { useAuth } from "contexts/AuthContext";
+import { resolveHotelIdForOwner } from "utils/hotelOwnerUtils";
 import Widget from "components/widget/Widget";
 import CheckTable from "views/admin/default/components/CheckTable";
 import WeeklyRevenue from "views/admin/default/components/WeeklyRevenue";
@@ -28,6 +29,7 @@ const HotelOwnerDashboard = () => {
     const [recentCheckIns, setRecentCheckIns] = useState([]);
     const [recentCheckOuts, setRecentCheckOuts] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [missingHotel, setMissingHotel] = useState(false);
 
     useEffect(() => {
         if (currentUser) {
@@ -39,15 +41,22 @@ const HotelOwnerDashboard = () => {
         try {
             setLoading(true);
 
-            // Get user's hotel ID
-            const userDoc = await getDocs(query(collection(db, "users"), where("uid", "==", currentUser.uid)));
-            const userData = userDoc.docs[0]?.data();
-            const hotelId = userData?.hotelId;
+            const hotelId = await resolveHotelIdForOwner(currentUser.uid);
 
             if (!hotelId) {
-                console.error("No hotel ID found for user");
+                setMissingHotel(true);
+                setStats({
+                    totalGuests: 0,
+                    totalRevenue: 0,
+                    checkInsToday: 0,
+                    checkOutsToday: 0,
+                    occupancyRate: 0,
+                });
+                setRecentCheckIns([]);
+                setRecentCheckOuts([]);
                 return;
             }
+            setMissingHotel(false);
 
             // Fetch check-ins
             const checkInsQuery = query(
@@ -161,6 +170,16 @@ const HotelOwnerDashboard = () => {
 
     return (
         <div>
+            {missingHotel && (
+                <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100">
+                    <p className="font-semibold">No hotel linked to your account</p>
+                    <p className="mt-1 text-sm">
+                        A super admin must create your hotel in Hotel Management using your sign-up email, or your{" "}
+                        <code className="rounded bg-white/60 px-1 dark:bg-black/30">hotels.ownerId</code> must match your
+                        Firebase Auth user ID in Firestore.
+                    </p>
+                </div>
+            )}
             {/* Stats Cards */}
             <div className="mt-3 grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-4">
                 <Widget

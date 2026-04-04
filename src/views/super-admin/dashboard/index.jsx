@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { collection, getDocs, query, orderBy } from "firebase/firestore";
+import { collection, getDocs } from "firebase/firestore";
 import { db } from "../../../firebase/config";
 import Widget from "components/widget/Widget";
 import CheckTable from "views/admin/default/components/CheckTable";
@@ -13,6 +13,17 @@ import {
     MdCheckCircle,
     MdCancel
 } from "react-icons/md";
+
+/** Firestore orderBy('createdAt') omits docs without that field; sort client-side instead. */
+function createdAtMs(data) {
+    const c = data?.createdAt;
+    if (!c) return 0;
+    if (typeof c.toMillis === "function") return c.toMillis();
+    if (typeof c.toDate === "function") return c.toDate().getTime();
+    if (typeof c.seconds === "number") return c.seconds * 1000;
+    if (c instanceof Date) return c.getTime();
+    return 0;
+}
 
 const SuperAdminDashboard = () => {
     const [stats, setStats] = useState({
@@ -33,21 +44,15 @@ const SuperAdminDashboard = () => {
         try {
             setLoading(true);
 
-            // Fetch hotels
-            const hotelsQuery = query(collection(db, "hotels"), orderBy("createdAt", "desc"));
-            const hotelsSnapshot = await getDocs(hotelsQuery);
-            const hotels = hotelsSnapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data()
-            }));
+            const hotelsSnapshot = await getDocs(collection(db, "hotels"));
+            const hotels = hotelsSnapshot.docs
+                .map((d) => ({ id: d.id, ...d.data() }))
+                .sort((a, b) => createdAtMs(b) - createdAtMs(a));
 
-            // Fetch users
-            const usersQuery = query(collection(db, "users"), orderBy("createdAt", "desc"));
-            const usersSnapshot = await getDocs(usersQuery);
-            const users = usersSnapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data()
-            }));
+            const usersSnapshot = await getDocs(collection(db, "users"));
+            const users = usersSnapshot.docs
+                .map((d) => ({ id: d.id, ...d.data() }))
+                .sort((a, b) => createdAtMs(b) - createdAtMs(a));
 
             // Calculate stats
             const activeHotels = hotels.filter(hotel => hotel.isActive).length;

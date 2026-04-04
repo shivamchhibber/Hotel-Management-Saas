@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { collection, getDocs, query, where, orderBy } from "firebase/firestore";
 import { db } from "../../../firebase/config";
 import { useAuth } from "contexts/AuthContext";
+import { resolveHotelIdForOwner } from "utils/hotelOwnerUtils";
 import WeeklyRevenue from "views/admin/default/components/WeeklyRevenue";
 import TotalSpent from "views/admin/default/components/TotalSpent";
 import PieChartCard from "views/admin/default/components/PieChartCard";
@@ -25,6 +26,7 @@ const Reports = () => {
     const [revenueData, setRevenueData] = useState([]);
     const [guestData, setGuestData] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [missingHotel, setMissingHotel] = useState(false);
     const [dateRange, setDateRange] = useState("30"); // days
 
     useEffect(() => {
@@ -37,15 +39,21 @@ const Reports = () => {
         try {
             setLoading(true);
 
-            // Get user's hotel ID
-            const userDoc = await getDocs(query(collection(db, "users"), where("uid", "==", currentUser.uid)));
-            const userData = userDoc.docs[0]?.data();
-            const hotelId = userData?.hotelId;
+            const hotelId = await resolveHotelIdForOwner(currentUser.uid);
 
             if (!hotelId) {
-                console.error("No hotel ID found for user");
+                setMissingHotel(true);
+                setReports({
+                    totalRevenue: 0,
+                    totalGuests: 0,
+                    averageStayDuration: 0,
+                    occupancyRate: 0,
+                });
+                setRevenueData([]);
+                setGuestData([]);
                 return;
             }
+            setMissingHotel(false);
 
             // Calculate date range
             const endDate = new Date();
@@ -193,6 +201,15 @@ const Reports = () => {
 
     return (
         <div>
+            {missingHotel && (
+                <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100">
+                    <p className="font-semibold">No hotel linked to your account</p>
+                    <p className="mt-1 text-sm">
+                        Ask a super admin to assign your hotel via Hotel Management (your sign-up email), or fix{" "}
+                        <code className="rounded bg-white/60 px-1 dark:bg-black/30">hotels.ownerId</code> to your Auth UID.
+                    </p>
+                </div>
+            )}
             <div className="mt-6 mb-6 flex items-center justify-between">
                 <h2 className="text-2xl font-bold text-navy-700 dark:text-white">
                     Reports & Analytics

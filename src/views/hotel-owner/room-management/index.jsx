@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from "react";
-import { collection, getDocs, getDoc, doc, addDoc, updateDoc, deleteDoc, query, where, orderBy, serverTimestamp, limit } from "firebase/firestore";
+import { collection, getDocs, getDoc, doc, addDoc, updateDoc, deleteDoc, query, where, serverTimestamp } from "firebase/firestore";
 import { db } from "../../../firebase/config";
 import { useAuth } from "contexts/AuthContext";
+import { resolveHotelIdForOwner } from "utils/hotelOwnerUtils";
 import ComplexTable from "views/admin/default/components/ComplexTable";
 import InputField from "components/fields/InputField";
 import {
@@ -24,6 +25,8 @@ const RoomManagement = () => {
     const [recentActions, setRecentActions] = useState([]);
     const [loading, setLoading] = useState(true);
     const [showAddModal, setShowAddModal] = useState(false);
+    const [addRoomError, setAddRoomError] = useState("");
+    const [addRoomSaving, setAddRoomSaving] = useState(false);
     const [showEditModal, setShowEditModal] = useState(false);
     const [selectedRoom, setSelectedRoom] = useState(null);
     const [formData, setFormData] = useState({
@@ -49,15 +52,11 @@ const RoomManagement = () => {
         try {
             setLoading(true);
 
-            // Get hotel ID for current owner
-            const ownerSnap = await getDocs(query(collection(db, "users"), where("uid", "==", currentUser.uid), limit(1)));
-            const ownerDocId = ownerSnap.docs[0]?.id;
-
-            const hotelSnap = await getDocs(query(collection(db, "hotels"), where("ownerId", "==", ownerDocId), limit(1)));
-            const hotelId = hotelSnap.docs[0]?.id;
+            const hotelId = await resolveHotelIdForOwner(currentUser.uid);
 
             if (!hotelId) {
                 console.error("No hotel ID found for user");
+                setRooms([]);
                 return;
             }
 
@@ -87,18 +86,11 @@ const RoomManagement = () => {
 
     const fetchRecentActions = async () => {
         try {
-            // Get hotel ID using the same logic as staff management
-            const ownerSnap = await getDocs(query(collection(db, "users"), where("uid", "==", currentUser.uid), limit(1)));
-            const ownerDocId = ownerSnap.docs[0]?.id;
-            console.log('Owner doc ID:', ownerDocId);
-
-            // Find the hotel owned by this owner document id
-            const hotelSnap = await getDocs(query(collection(db, "hotels"), where("ownerId", "==", ownerDocId), limit(1)));
-            const hotelId = hotelSnap.docs[0]?.id;
-            console.log('Hotel ID (document ID):', hotelId);
+            const hotelId = await resolveHotelIdForOwner(currentUser.uid);
 
             if (!hotelId) {
                 console.error("No hotel ID found for owner");
+                setRecentActions([]);
                 return;
             }
 
@@ -108,14 +100,11 @@ const RoomManagement = () => {
                 where("hotelId", "==", hotelId)
             );
             const actionsSnapshot = await getDocs(actionsQuery);
-            console.log('Actions snapshot size:', actionsSnapshot.docs.length);
-            
+
             const actionsData = actionsSnapshot.docs.map(doc => ({
                 id: doc.id,
                 ...doc.data()
             }));
-            console.log('Actions data:', actionsData);
-
             // Sort by timestamp in JavaScript to avoid Firebase index issues
             actionsData.sort((a, b) => {
                 const dateA = a.timestamp?.toDate() || new Date(0);
@@ -143,7 +132,6 @@ const RoomManagement = () => {
                 })
             );
 
-            console.log('Actions with staff names:', actionsWithStaffNames);
             setRecentActions(actionsWithStaffNames);
         } catch (error) {
             console.error("Error fetching recent actions:", error);
@@ -152,14 +140,8 @@ const RoomManagement = () => {
 
     const addTestAction = async () => {
         try {
-            // Get hotel ID using the same logic as staff management
-            const ownerSnap = await getDocs(query(collection(db, "users"), where("uid", "==", currentUser.uid), limit(1)));
-            const ownerDocId = ownerSnap.docs[0]?.id;
+            const hotelId = await resolveHotelIdForOwner(currentUser.uid);
 
-            // Find the hotel owned by this owner document id
-            const hotelSnap = await getDocs(query(collection(db, "hotels"), where("ownerId", "==", ownerDocId), limit(1)));
-            const hotelId = hotelSnap.docs[0]?.id;
-            
             if (!hotelId) {
                 console.error("No hotel ID found for owner");
                 return;
@@ -177,8 +159,7 @@ const RoomManagement = () => {
             };
 
             await addDoc(collection(db, "staff_actions"), testActionData);
-            console.log('Test action added successfully');
-            
+
             // Refresh the actions list
             fetchRecentActions();
         } catch (error) {
@@ -188,43 +169,79 @@ const RoomManagement = () => {
 
     const handleAddRoom = async (e) => {
         e.preventDefault();
+        setAddRoomError("");
+        setAddRoomSaving(true);
         try {
-            // Get hotel ID for current owner
-            const ownerSnap = await getDocs(query(collection(db, "users"), where("uid", "==", currentUser.uid), limit(1)));
-            const ownerDocId = ownerSnap.docs[0]?.id;
-
-            const hotelSnap = await getDocs(query(collection(db, "hotels"), where("ownerId", "==", ownerDocId), limit(1)));
-            const hotelId = hotelSnap.docs[0]?.id;
+            const hotelId = await resolveHotelIdForOwner(currentUser.uid);
 
             if (!hotelId) {
-                console.error("No hotel ID found for user");
+                setAddRoomError(
+                    "No hotel is linked to your account. A super admin must create your hotel in Hotel Management using your email, or Firestore must have hotels.ownerId set to your Firebase Auth user ID.",
+                );
                 return;
             }
 
-            // Check if room number already exists
-            const existingRoom = rooms.find(room => room.roomNumber === formData.roomNumber);
+            const roomNumber = String(formData.roomNumber || "").trim();
+            const priceNum = parseFloat(formData.price);
+            const floorNum = parseInt(formData.floor, 10);
+            if (!roomNumber) {
+                setAddRoomError("Room number is required.");
+                return;
+            }
+            if (!Number.isFinite(priceNum) || priceNum < 0) {
+                setAddRoomError("Enter a valid price (₹).");
+                return;
+            }
+            if (!Number.isFinite(floorNum)) {
+                setAddRoomError("Enter a valid floor number.");
+                return;
+            }
+
+            const existingRoom = rooms.find(
+                (room) => String(room.roomNumber) === roomNumber,
+            );
             if (existingRoom) {
-                alert("Room number already exists!");
+                setAddRoomError("That room number already exists for your hotel.");
                 return;
             }
 
-            // Create room document
             await addDoc(collection(db, "rooms"), {
-                ...formData,
+                roomNumber,
+                roomType: formData.roomType,
+                floor: floorNum,
+                price: priceNum,
+                amenities: Array.isArray(formData.amenities) ? formData.amenities : [],
+                description: (formData.description || "").trim(),
                 hotelId,
-                price: parseFloat(formData.price),
-                floor: parseInt(formData.floor),
-                status: 'available',
+                status: "available",
                 isActive: true,
                 createdAt: serverTimestamp(),
-                createdBy: currentUser.uid
+                createdBy: currentUser.uid,
             });
 
             setShowAddModal(false);
-            setFormData({ roomNumber: '', roomType: 'Standard', floor: '', price: '', amenities: [], description: '' });
+            setAddRoomError("");
+            setFormData({
+                roomNumber: "",
+                roomType: "Standard",
+                floor: "",
+                price: "",
+                amenities: [],
+                description: "",
+            });
             fetchRooms();
         } catch (error) {
             console.error("Error adding room:", error);
+            const code = String(error?.code || "");
+            if (code.includes("permission-denied") || code.includes("permissions")) {
+                setAddRoomError(
+                    "Permission denied. Rules require hotels.ownerId to equal your Firebase Auth UID (from Authentication → User UID), and users/{that same UID}.role to be hotel_owner. If you only changed role in Console but the hotel doc still has a dummy or email in ownerId, fix ownerId in Firestore or use Super Admin → Add Hotel with your email.",
+                );
+            } else {
+                setAddRoomError(error?.message || "Could not add room. Check the browser console for details.");
+            }
+        } finally {
+            setAddRoomSaving(false);
         }
     };
 
@@ -415,7 +432,11 @@ const RoomManagement = () => {
                     Room Management
                 </h2>
                 <button
-                    onClick={() => setShowAddModal(true)}
+                    type="button"
+                    onClick={() => {
+                        setAddRoomError("");
+                        setShowAddModal(true);
+                    }}
                     className="flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-white hover:bg-brand-600"
                 >
                     <MdAdd className="h-4 w-4" />
@@ -500,7 +521,11 @@ const RoomManagement = () => {
                                 Add New Room
                             </h3>
                             <button
-                                onClick={() => setShowAddModal(false)}
+                                type="button"
+                                onClick={() => {
+                                    setShowAddModal(false);
+                                    setAddRoomError("");
+                                }}
                                 className="text-gray-500 hover:text-gray-700"
                             >
                                 <MdCancel className="h-6 w-6" />
@@ -508,8 +533,14 @@ const RoomManagement = () => {
                         </div>
 
                         <form onSubmit={handleAddRoom} className="space-y-4">
+                            {addRoomError ? (
+                                <div className="rounded-lg bg-red-50 p-3 text-sm text-red-800 dark:bg-red-900/30 dark:text-red-200">
+                                    {addRoomError}
+                                </div>
+                            ) : null}
                             <div className="grid grid-cols-2 gap-4">
                                 <InputField
+                                    id="add-room-number"
                                     label="Room Number*"
                                     placeholder="101"
                                     value={formData.roomNumber}
@@ -518,6 +549,7 @@ const RoomManagement = () => {
                                 />
 
                                 <InputField
+                                    id="add-room-floor"
                                     label="Floor*"
                                     type="number"
                                     placeholder="1"
@@ -545,6 +577,7 @@ const RoomManagement = () => {
                                 </div>
 
                                 <InputField
+                                    id="add-room-price"
                                     label="Price per Night (₹)*"
                                     type="number"
                                     placeholder="2500"
@@ -574,6 +607,7 @@ const RoomManagement = () => {
                             </div>
 
                             <InputField
+                                id="add-room-description"
                                 label="Description"
                                 placeholder="Room description..."
                                 value={formData.description}
@@ -583,16 +617,20 @@ const RoomManagement = () => {
                             <div className="flex gap-3">
                                 <button
                                     type="button"
-                                    onClick={() => setShowAddModal(false)}
+                                    onClick={() => {
+                                        setShowAddModal(false);
+                                        setAddRoomError("");
+                                    }}
                                     className="flex-1 rounded-lg bg-gray-200 px-4 py-2 text-gray-700 hover:bg-gray-300"
                                 >
                                     Cancel
                                 </button>
                                 <button
                                     type="submit"
-                                    className="flex-1 rounded-lg bg-brand-500 px-4 py-2 text-white hover:bg-brand-600"
+                                    disabled={addRoomSaving}
+                                    className="flex-1 rounded-lg bg-brand-500 px-4 py-2 text-white hover:bg-brand-600 disabled:opacity-60"
                                 >
-                                    Add Room
+                                    {addRoomSaving ? "Saving…" : "Add Room"}
                                 </button>
                             </div>
                         </form>

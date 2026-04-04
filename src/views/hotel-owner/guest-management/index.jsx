@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from "react";
-import { collection, getDocs, query, where, limit, doc, updateDoc } from "firebase/firestore";
+import { collection, getDocs, query, where, doc, updateDoc } from "firebase/firestore";
 import { db } from "../../../firebase/config";
 import { useAuth } from "contexts/AuthContext";
+import { resolveHotelIdForOwner } from "utils/hotelOwnerUtils";
 import ComplexTable from "views/admin/default/components/ComplexTable";
 import {
     MdPeople,
@@ -35,15 +36,12 @@ const GuestManagement = () => {
         try {
             setLoading(true);
 
-            // Get hotel ID using the same logic as room management
-            const ownerSnap = await getDocs(query(collection(db, "users"), where("uid", "==", currentUser.uid), limit(1)));
-            const ownerDocId = ownerSnap.docs[0]?.id;
-
-            const hotelSnap = await getDocs(query(collection(db, "hotels"), where("ownerId", "==", ownerDocId), limit(1)));
-            const hotelId = hotelSnap.docs[0]?.id;
+            const hotelId = await resolveHotelIdForOwner(currentUser.uid);
 
             if (!hotelId) {
                 console.error("No hotel ID found for owner");
+                setGuests([]);
+                setFilteredGuests([]);
                 return;
             }
 
@@ -112,11 +110,6 @@ const GuestManagement = () => {
                 return dateB - dateA;
             });
 
-            console.log('Total rooms found:', roomsData.length);
-            console.log('Rooms with guest info:', roomsData.filter(room => room.guestInfo).length);
-            console.log('Guest map size:', guestMap.size);
-            console.log('Final guests data:', guestsData);
-
             setGuests(guestsData);
         } catch (error) {
             console.error("Error fetching guests:", error);
@@ -170,12 +163,7 @@ const GuestManagement = () => {
 
     const addTestGuestData = async () => {
         try {
-            // Get hotel ID using the same logic as room management
-            const ownerSnap = await getDocs(query(collection(db, "users"), where("uid", "==", currentUser.uid), limit(1)));
-            const ownerDocId = ownerSnap.docs[0]?.id;
-
-            const hotelSnap = await getDocs(query(collection(db, "hotels"), where("ownerId", "==", ownerDocId), limit(1)));
-            const hotelId = hotelSnap.docs[0]?.id;
+            const hotelId = await resolveHotelIdForOwner(currentUser.uid);
 
             if (!hotelId) {
                 console.error("No hotel ID found for owner");
@@ -219,8 +207,6 @@ const GuestManagement = () => {
                 status: "checked-in"
             });
 
-            console.log('Test guest data added successfully');
-            
             // Refresh the guests list
             fetchGuests();
         } catch (error) {

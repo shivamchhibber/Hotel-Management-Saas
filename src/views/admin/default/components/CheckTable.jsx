@@ -14,6 +14,10 @@ function CheckTable(props) {
   const [sorting, setSorting] = React.useState([]);
   const [data, setData] = React.useState(() => [...tableData]);
 
+  React.useEffect(() => {
+    setData([...tableData]);
+  }, [tableData]);
+
   const formatCell = (value) => {
     if (!value) return "";
     // Firestore Timestamp

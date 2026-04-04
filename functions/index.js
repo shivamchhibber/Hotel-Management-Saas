@@ -5,6 +5,23 @@ admin.initializeApp();
 
 const REGION = 'us-central1';
 
+function safeNonNegativeInt(value, fallback) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return fallback;
+    return Math.floor(n);
+}
+
+function safeNonNegativeNumber(value, fallback) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return fallback;
+    return n;
+}
+
+function trimStr(value) {
+    if (value == null) return '';
+    return String(value).trim();
+}
+
 /**
  * Hotel owner's Firestore hotel document id (authoritative), derived from Auth uid.
  */
@@ -224,11 +241,16 @@ exports.superAdminCreateHotel = functions.region(REGION).https.onCall(async (dat
         if (!ownerEmail || typeof ownerEmail !== 'string') {
             throw new functions.https.HttpsError('invalid-argument', 'ownerEmail is required');
         }
-        if (!hotel || typeof hotel !== 'object' || !hotel.name) {
+        if (!hotel || typeof hotel !== 'object') {
+            throw new functions.https.HttpsError('invalid-argument', 'hotel payload is required');
+        }
+
+        const hotelName = trimStr(hotel.name);
+        if (!hotelName) {
             throw new functions.https.HttpsError('invalid-argument', 'hotel.name is required');
         }
 
-        const normalizedEmail = ownerEmail.trim().toLowerCase();
+        const normalizedEmail = trimStr(ownerEmail).toLowerCase();
         let ownerRecord;
         try {
             ownerRecord = await admin.auth().getUserByEmail(normalizedEmail);
@@ -239,26 +261,37 @@ exports.superAdminCreateHotel = functions.region(REGION).https.onCall(async (dat
                     'Owner must create a Firebase Auth account first (sign up), then a super admin can attach a hotel.',
                 );
             }
-            throw e;
+            if (e.code === 'auth/invalid-email') {
+                throw new functions.https.HttpsError('invalid-argument', 'Invalid owner email address.');
+            }
+            throw new functions.https.HttpsError(
+                'failed-precondition',
+                'Could not look up owner in Authentication. Check the email and Firebase Auth setup.',
+            );
         }
 
         const ownerUid = ownerRecord.uid;
-        const totalRooms = Number(hotel.totalRooms) || 0;
+        const totalRooms = safeNonNegativeInt(hotel.totalRooms, 0);
+        let availableRooms = hotel.availableRooms != null
+            ? safeNonNegativeInt(hotel.availableRooms, totalRooms)
+            : totalRooms;
+        if (availableRooms > totalRooms) availableRooms = totalRooms;
+        const totalRevenue = safeNonNegativeNumber(hotel.totalRevenue, 0);
 
         const hotelRef = await admin.firestore().collection('hotels').add({
-            name: hotel.name,
+            name: hotelName,
             ownerId: ownerUid,
-            ownerName: hotel.ownerName || ownerRecord.displayName || '',
-            address: hotel.address || '',
-            phone: hotel.phone || '',
-            email: hotel.email || '',
-            description: hotel.description || '',
+            ownerName: trimStr(hotel.ownerName) || ownerRecord.displayName || '',
+            address: trimStr(hotel.address),
+            phone: trimStr(hotel.phone),
+            email: trimStr(hotel.email),
+            description: trimStr(hotel.description),
             isActive: hotel.isActive !== false,
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
             amenities: Array.isArray(hotel.amenities) ? hotel.amenities : [],
             totalRooms,
-            availableRooms: hotel.availableRooms != null ? Number(hotel.availableRooms) : totalRooms,
-            totalRevenue: hotel.totalRevenue != null ? Number(hotel.totalRevenue) : 0,
+            availableRooms,
+            totalRevenue,
         });
 
         const hotelId = hotelRef.id;
@@ -266,8 +299,8 @@ exports.superAdminCreateHotel = functions.region(REGION).https.onCall(async (dat
         await admin.firestore().collection('users').doc(ownerUid).set({
             uid: ownerUid,
             email: normalizedEmail,
-            displayName: hotel.ownerName || ownerRecord.displayName || '',
-            phoneNumber: hotel.ownerPhone || ownerRecord.phoneNumber || null,
+            displayName: trimStr(hotel.ownerName) || ownerRecord.displayName || '',
+            phoneNumber: trimStr(hotel.ownerPhone) || ownerRecord.phoneNumber || null,
             role: 'hotel_owner',
             hotelId,
             isActive: true,
@@ -280,6 +313,10 @@ exports.superAdminCreateHotel = functions.region(REGION).https.onCall(async (dat
         if (error instanceof functions.https.HttpsError) {
             throw error;
         }
-        throw new functions.https.HttpsError('internal', 'Failed to create hotel: ' + error.message);
+        // Avoid code 'internal' — Firebase clients often hide the message and only show "internal".
+        throw new functions.https.HttpsError(
+            'failed-precondition',
+            'Could not create hotel: ' + (error && error.message ? error.message : String(error)),
+        );
     }
 });

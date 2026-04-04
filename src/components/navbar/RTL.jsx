@@ -1,7 +1,8 @@
 import React from "react";
 import Dropdown from "components/dropdown";
 import { FiAlignJustify } from "react-icons/fi";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { useAuth } from "contexts/AuthContext";
 import navbarimage from "assets/img/layout/Navbar.png";
 import { BsArrowBarUp } from "react-icons/bs";
 import { FiSearch } from "react-icons/fi";
@@ -15,6 +16,14 @@ import avatar from "assets/img/avatars/avatar4.png";
 const Navbar = (props) => {
   const { onOpenSidenav, brandText } = props;
   const [darkmode, setDarkmode] = React.useState(false);
+  const { logout, currentUser } = useAuth();
+  const navigate = useNavigate();
+
+  const profileLabel =
+    currentUser?.displayName?.trim() ||
+    currentUser?.email?.split("@")[0] ||
+    "there";
+  const profilePhoto = currentUser?.photoURL || avatar;
 
   return (
     <nav className="sticky top-4 z-40 flex flex-row flex-wrap items-center justify-between rounded-xl bg-white/10 p-2 backdrop-blur-xl dark:bg-[#0b14374d]">
@@ -179,41 +188,40 @@ const Navbar = (props) => {
         <Dropdown
           button={
             <img
-              className="h-10 w-10 rounded-full"
-              src={avatar}
-              alt="Elon Musk"
+              className="h-10 w-10 rounded-full object-cover"
+              src={profilePhoto}
+              alt=""
             />
           }
           children={
             <div className="flex w-56 flex-col justify-start rounded-[20px] bg-white bg-cover bg-no-repeat shadow-xl shadow-shadow-500 dark:!bg-navy-700 dark:text-white dark:shadow-none">
               <div className="p-4">
-                <div className="flex items-center gap-2">
-                  <p className="text-sm font-bold text-navy-700 dark:text-white">
-                    👋 Hey, Adela
-                  </p>{" "}
-                </div>
+                <p className="text-sm font-bold text-navy-700 dark:text-white">
+                  👋 Hey, {profileLabel}
+                </p>
+                {currentUser?.email ? (
+                  <p className="mt-1 truncate text-xs text-gray-500 dark:text-gray-400">
+                    {currentUser.email}
+                  </p>
+                ) : null}
               </div>
               <div className="h-px w-full bg-gray-200 dark:bg-white/20 " />
 
               <div className="flex flex-col p-4">
-                <a
-                  href=" "
-                  className="text-sm text-gray-800 dark:text-white hover:dark:text-white"
-                >
-                  Profile Settings
-                </a>
-                <a
-                  href=" "
-                  className="mt-3 text-sm text-gray-800 dark:text-white hover:dark:text-white"
-                >
-                  Newsletter Settings
-                </a>
-                <a
-                  href=" "
-                  className="mt-3 text-sm font-medium text-red-500 hover:text-red-500 transition duration-150 ease-out hover:ease-in"
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await logout();
+                      navigate("/auth/sign-in", { replace: true });
+                    } catch (e) {
+                      console.error("Logout failed", e);
+                    }
+                  }}
+                  className="text-left text-sm font-medium text-red-500 hover:text-red-500 transition duration-150 ease-out hover:ease-in"
                 >
                   Log Out
-                </a>
+                </button>
               </div>
             </div>
           }
