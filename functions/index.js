@@ -23,6 +23,84 @@ function trimStr(value) {
 }
 
 /**
+ * instanceof can fail across module boundaries; HttpsError always sets code + httpErrorCode.
+ */
+function isHttpsError(error) {
+    return (
+        error instanceof functions.https.HttpsError ||
+        (!!error &&
+            typeof error.code === 'string' &&
+            error.httpErrorCode &&
+            typeof error.httpErrorCode.status === 'number')
+    );
+}
+
+function truncateForClient(msg, maxLen) {
+    const s = String(msg == null ? '' : msg);
+    const m = maxLen || 2000;
+    return s.length > m ? `${s.slice(0, m)}…` : s;
+}
+
+function mapKnownBackendError(error) {
+    if (!error || typeof error !== 'object') return null;
+    const c = error.code;
+    if (c === 7 || c === 'PERMISSION_DENIED') {
+        return 'Firestore permission denied. Confirm the Functions default service account can access Firestore in this project.';
+    }
+    if (c === 8 || c === 'RESOURCE_EXHAUSTED') {
+        return 'Firestore quota exceeded.';
+    }
+    if (c === 14 || c === 'UNAVAILABLE' || c === 'unavailable') {
+        return 'Firestore or Auth service temporarily unavailable; retry in a moment.';
+    }
+    if (typeof c === 'string' && c.startsWith('auth/')) {
+        return error.message || c;
+    }
+    return null;
+}
+
+function wrapUnexpectedError(error, prefix) {
+    if (isHttpsError(error)) {
+        throw error;
+    }
+    const mapped = mapKnownBackendError(error);
+    const raw = mapped || (error && error.message ? error.message : String(error));
+    throw new functions.https.HttpsError(
+        'failed-precondition',
+        truncateForClient(`${prefix}: ${raw}`),
+    );
+}
+
+/** Firestore rejects undefined field values in Node Admin SDK. */
+function stripUndefined(obj) {
+    const out = {};
+    Object.keys(obj || {}).forEach((k) => {
+        const v = obj[k];
+        if (v !== undefined) {
+            out[k] = v;
+        }
+    });
+    return out;
+}
+
+/**
+ * Serialize a Firestore doc for JSON callable response (timestamps → epoch ms).
+ */
+function serializeFirestoreDoc(docSnap) {
+    const raw = docSnap.data();
+    const row = { id: docSnap.id };
+    Object.keys(raw || {}).forEach((k) => {
+        const v = raw[k];
+        if (v && typeof v.toMillis === 'function') {
+            row[k] = v.toMillis();
+        } else if (v !== undefined) {
+            row[k] = v;
+        }
+    });
+    return row;
+}
+
+/**
  * Hotel owner's Firestore hotel document id (authoritative), derived from Auth uid.
  */
 async function getHotelIdForOwnerUid(ownerAuthUid) {
@@ -42,7 +120,8 @@ exports.createStaffUser = functions.region(REGION).https.onCall(async (data, con
             throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
         }
 
-        const { email, password, displayName, phoneNumber } = data;
+        const payload = data || {};
+        const { email, password, displayName, phoneNumber } = payload;
 
         if (!email || !password || !displayName) {
             throw new functions.https.HttpsError('invalid-argument', 'Missing required fields');
@@ -89,10 +168,19 @@ exports.createStaffUser = functions.region(REGION).https.onCall(async (data, con
         };
     } catch (error) {
         console.error('Error creating staff user:', error);
-        if (error instanceof functions.https.HttpsError) {
+        if (isHttpsError(error)) {
             throw error;
         }
-        throw new functions.https.HttpsError('internal', 'Failed to create staff account: ' + error.message);
+        if (error.code === 'auth/email-already-exists') {
+            throw new functions.https.HttpsError('already-exists', 'That email is already registered in Authentication.');
+        }
+        if (error.code === 'auth/invalid-email') {
+            throw new functions.https.HttpsError('invalid-argument', 'Invalid email address.');
+        }
+        if (error.code === 'auth/weak-password') {
+            throw new functions.https.HttpsError('invalid-argument', 'Password is too weak. Use a stronger password.');
+        }
+        wrapUnexpectedError(error, 'Failed to create staff account');
     }
 });
 
@@ -102,7 +190,8 @@ exports.deleteStaffUser = functions.region(REGION).https.onCall(async (data, con
             throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
         }
 
-        const { staffUid } = data;
+        const payload = data || {};
+        const { staffUid } = payload;
         if (!staffUid) {
             throw new functions.https.HttpsError('invalid-argument', 'Staff UID is required');
         }
@@ -132,10 +221,13 @@ exports.deleteStaffUser = functions.region(REGION).https.onCall(async (data, con
         return { success: true, message: 'Staff account deleted successfully' };
     } catch (error) {
         console.error('Error deleting staff user:', error);
-        if (error instanceof functions.https.HttpsError) {
+        if (isHttpsError(error)) {
             throw error;
         }
-        throw new functions.https.HttpsError('internal', 'Failed to delete staff account: ' + error.message);
+        if (error.code === 'auth/user-not-found') {
+            throw new functions.https.HttpsError('not-found', 'Staff user no longer exists in Authentication.');
+        }
+        wrapUnexpectedError(error, 'Failed to delete staff account');
     }
 });
 
@@ -175,7 +267,8 @@ exports.resetStaffPassword = functions.region(REGION).https.onCall(async (data, 
             throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
         }
 
-        const { staffUid } = data;
+        const payload = data || {};
+        const { staffUid } = payload;
         if (!staffUid) {
             throw new functions.https.HttpsError('invalid-argument', 'Staff UID is required');
         }
@@ -219,14 +312,17 @@ exports.resetStaffPassword = functions.region(REGION).https.onCall(async (data, 
         };
     } catch (error) {
         console.error('Error resetting staff password:', error);
-        if (error instanceof functions.https.HttpsError) {
+        if (isHttpsError(error)) {
             throw error;
         }
-        throw new functions.https.HttpsError('internal', 'Failed to reset staff password: ' + error.message);
+        wrapUnexpectedError(error, 'Failed to reset staff password');
     }
 });
 
-exports.superAdminCreateHotel = functions.region(REGION).https.onCall(async (data, context) => {
+exports.superAdminCreateHotel = functions
+    .runWith({ timeoutSeconds: 120, memory: '512MB' })
+    .region(REGION)
+    .https.onCall(async (data, context) => {
     try {
         if (!context.auth) {
             throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
@@ -237,7 +333,8 @@ exports.superAdminCreateHotel = functions.region(REGION).https.onCall(async (dat
             throw new functions.https.HttpsError('permission-denied', 'Only super admins can create hotels');
         }
 
-        const { ownerEmail, hotel } = data || {};
+        const payload = data || {};
+        const { ownerEmail, hotel } = payload;
         if (!ownerEmail || typeof ownerEmail !== 'string') {
             throw new functions.https.HttpsError('invalid-argument', 'ownerEmail is required');
         }
@@ -278,7 +375,11 @@ exports.superAdminCreateHotel = functions.region(REGION).https.onCall(async (dat
         if (availableRooms > totalRooms) availableRooms = totalRooms;
         const totalRevenue = safeNonNegativeNumber(hotel.totalRevenue, 0);
 
-        const hotelRef = await admin.firestore().collection('hotels').add({
+        const amenities = Array.isArray(hotel.amenities)
+            ? hotel.amenities.filter((a) => typeof a === 'string')
+            : [];
+
+        const hotelPayload = stripUndefined({
             name: hotelName,
             ownerId: ownerUid,
             ownerName: trimStr(hotel.ownerName) || ownerRecord.displayName || '',
@@ -288,35 +389,88 @@ exports.superAdminCreateHotel = functions.region(REGION).https.onCall(async (dat
             description: trimStr(hotel.description),
             isActive: hotel.isActive !== false,
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
-            amenities: Array.isArray(hotel.amenities) ? hotel.amenities : [],
+            amenities,
             totalRooms,
             availableRooms,
             totalRevenue,
         });
 
+        const hotelRef = await admin.firestore().collection('hotels').add(hotelPayload);
+
         const hotelId = hotelRef.id;
 
-        await admin.firestore().collection('users').doc(ownerUid).set({
+        const ownerPhone =
+            trimStr(hotel.ownerPhone) ||
+            (typeof ownerRecord.phoneNumber === 'string' ? ownerRecord.phoneNumber : '') ||
+            null;
+
+        const userPayload = stripUndefined({
             uid: ownerUid,
             email: normalizedEmail,
             displayName: trimStr(hotel.ownerName) || ownerRecord.displayName || '',
-            phoneNumber: trimStr(hotel.ownerPhone) || ownerRecord.phoneNumber || null,
+            phoneNumber: ownerPhone,
             role: 'hotel_owner',
             hotelId,
             isActive: true,
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        }, { merge: true });
+        });
+
+        await admin.firestore().collection('users').doc(ownerUid).set(userPayload, { merge: true });
 
         return { success: true, hotelId, ownerUid };
     } catch (error) {
         console.error('Error in superAdminCreateHotel:', error);
-        if (error instanceof functions.https.HttpsError) {
+        if (isHttpsError(error)) {
             throw error;
         }
-        // Avoid code 'internal' — Firebase clients often hide the message and only show "internal".
-        throw new functions.https.HttpsError(
-            'failed-precondition',
-            'Could not create hotel: ' + (error && error.message ? error.message : String(error)),
-        );
+        wrapUnexpectedError(error, 'Could not create hotel');
+    }
+});
+
+/**
+ * List all Firestore user profiles (Admin SDK). Bypasses client list-query rule edge cases.
+ */
+exports.superAdminListUsers = functions.region(REGION).https.onCall(async (data, context) => {
+    try {
+        if (!context.auth) {
+            throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
+        }
+
+        const adminDoc = await admin.firestore().collection('users').doc(context.auth.uid).get();
+        if (!adminDoc.exists || adminDoc.data().role !== 'super_admin') {
+            throw new functions.https.HttpsError('permission-denied', 'Only super admins can list all users');
+        }
+
+        const snap = await admin.firestore().collection('users').get();
+        const users = snap.docs.map((d) => serializeFirestoreDoc(d));
+
+        return { users };
+    } catch (error) {
+        console.error('Error in superAdminListUsers:', error);
+        wrapUnexpectedError(error, 'Could not list users');
+    }
+});
+
+/**
+ * List all hotels (Admin SDK). Same pattern as superAdminListUsers.
+ */
+exports.superAdminListHotels = functions.region(REGION).https.onCall(async (data, context) => {
+    try {
+        if (!context.auth) {
+            throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
+        }
+
+        const adminDoc = await admin.firestore().collection('users').doc(context.auth.uid).get();
+        if (!adminDoc.exists || adminDoc.data().role !== 'super_admin') {
+            throw new functions.https.HttpsError('permission-denied', 'Only super admins can list all hotels');
+        }
+
+        const snap = await admin.firestore().collection('hotels').get();
+        const hotels = snap.docs.map((d) => serializeFirestoreDoc(d));
+
+        return { hotels };
+    } catch (error) {
+        console.error('Error in superAdminListHotels:', error);
+        wrapUnexpectedError(error, 'Could not list hotels');
     }
 });

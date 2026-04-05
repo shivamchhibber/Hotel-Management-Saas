@@ -35,6 +35,8 @@
     "pretty": "prettier --write \"./**/*.{js,jsx,json}\"",
     "seed": "node src/scripts/runSeed.js",
     "seed:admin": "node scripts/seed-admin.js",
+    "db:nuke-except-super-admin": "node scripts/nuke-except-super-admin.js",
+    "db:nuke-all": "node scripts/nuke-except-super-admin.js",
     "populate": "node populate-db.js",
     "install:functions": "npm install --prefix functions"
   },
@@ -57,6 +59,7 @@
     ]
   },
   "devDependencies": {
+    "@babel/plugin-proposal-private-property-in-object": "^7.21.11",
     "autoprefixer": "^10.4.8",
     "firebase-admin": "^11.11.1",
     "postcss": "^8.4.16",
