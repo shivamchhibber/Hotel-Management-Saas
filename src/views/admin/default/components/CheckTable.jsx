@@ -19,14 +19,21 @@ function CheckTable(props) {
   }, [tableData]);
 
   const formatCell = (value) => {
-    if (!value) return "";
+    if (value === null || value === undefined || value === "") return "";
+    // Callable responses often serialize Firestore timestamps as epoch ms
+    if (typeof value === "number" && Number.isFinite(value) && value > 1e12) {
+      return new Date(value).toLocaleString();
+    }
     // Firestore Timestamp
-    if (value && typeof value === 'object' && typeof value.toDate === 'function') {
+    if (value && typeof value === "object" && typeof value.toDate === "function") {
       try {
         return value.toDate().toLocaleString();
       } catch (e) {
         return String(value);
       }
+    }
+    if (value && typeof value === "object" && typeof value.seconds === "number") {
+      return new Date(value.seconds * 1000).toLocaleString();
     }
     return String(value);
   };

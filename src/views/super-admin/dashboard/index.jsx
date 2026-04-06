@@ -1,29 +1,29 @@
 import React, { useState, useEffect } from "react";
-import { collection, getDocs } from "firebase/firestore";
-import { db } from "../../../firebase/config";
+import { httpsCallable } from "firebase/functions";
+import { functions } from "../../../firebase/config";
 import Widget from "components/widget/Widget";
 import CheckTable from "views/admin/default/components/CheckTable";
-import ComplexTable from "views/admin/default/components/ComplexTable";
-import { columnsDataCheck, columnsDataComplex } from "views/admin/default/variables/columnsData";
 import {
     MdBusiness,
     MdPeople,
-    MdHotel,
     MdTrendingUp,
     MdCheckCircle,
-    MdCancel
 } from "react-icons/md";
 
 /** Firestore orderBy('createdAt') omits docs without that field; sort client-side instead. */
 function createdAtMs(data) {
     const c = data?.createdAt;
-    if (!c) return 0;
+    if (c == null) return 0;
+    if (typeof c === "number") return c;
     if (typeof c.toMillis === "function") return c.toMillis();
     if (typeof c.toDate === "function") return c.toDate().getTime();
     if (typeof c.seconds === "number") return c.seconds * 1000;
     if (c instanceof Date) return c.getTime();
     return 0;
 }
+
+const superAdminListHotels = httpsCallable(functions, "superAdminListHotels");
+const superAdminListUsers = httpsCallable(functions, "superAdminListUsers");
 
 const SuperAdminDashboard = () => {
     const [stats, setStats] = useState({
@@ -44,14 +44,13 @@ const SuperAdminDashboard = () => {
         try {
             setLoading(true);
 
-            const hotelsSnapshot = await getDocs(collection(db, "hotels"));
-            const hotels = hotelsSnapshot.docs
-                .map((d) => ({ id: d.id, ...d.data() }))
+            const [hotelsRes, usersRes] = await Promise.all([
+                superAdminListHotels(),
+                superAdminListUsers(),
+            ]);
+            const hotels = (Array.isArray(hotelsRes.data?.hotels) ? hotelsRes.data.hotels : [])
                 .sort((a, b) => createdAtMs(b) - createdAtMs(a));
-
-            const usersSnapshot = await getDocs(collection(db, "users"));
-            const users = usersSnapshot.docs
-                .map((d) => ({ id: d.id, ...d.data() }))
+            const users = (Array.isArray(usersRes.data?.users) ? usersRes.data.users : [])
                 .sort((a, b) => createdAtMs(b) - createdAtMs(a));
 
             // Calculate stats

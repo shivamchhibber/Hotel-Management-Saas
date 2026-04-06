@@ -2,6 +2,8 @@ import React, { useState, useEffect } from "react";
 import { collection, getDocs, query, where, orderBy } from "firebase/firestore";
 import { db } from "../../../firebase/config";
 import { useAuth } from "contexts/AuthContext";
+import { getHotelIdFromUserProfile } from "utils/userProfileUtils";
+import { staffListGuestsFn } from "utils/staffCallables";
 import CheckTable from "views/admin/default/components/CheckTable";
 import {
     MdPeople,
@@ -33,27 +35,29 @@ const GuestList = () => {
         try {
             setLoading(true);
 
-            // Get user's hotel ID
-            const userDoc = await getDocs(query(collection(db, "users"), where("uid", "==", currentUser.uid)));
-            const userData = userDoc.docs[0]?.data();
-            const hotelId = userData?.hotelId;
-
-            if (!hotelId) {
-                console.error("No hotel ID found for user");
-                return;
+            let guestsData = [];
+            try {
+                const { data } = await staffListGuestsFn({});
+                guestsData = Array.isArray(data?.guests) ? data.guests : [];
+            } catch (callableErr) {
+                console.warn("staffListGuests failed; falling back to Firestore query:", callableErr);
+                const hotelId = await getHotelIdFromUserProfile(currentUser.uid);
+                if (!hotelId) {
+                    console.error("No hotel ID on users/{uid}; staff profile missing hotelId.");
+                    setGuests([]);
+                    return;
+                }
+                const guestsQuery = query(
+                    collection(db, "guests"),
+                    where("hotelId", "==", hotelId),
+                    orderBy("createdAt", "desc"),
+                );
+                const guestsSnapshot = await getDocs(guestsQuery);
+                guestsData = guestsSnapshot.docs.map((d) => ({
+                    id: d.id,
+                    ...d.data(),
+                }));
             }
-
-            // Fetch guests for this hotel
-            const guestsQuery = query(
-                collection(db, "guests"),
-                where("hotelId", "==", hotelId),
-                orderBy("createdAt", "desc")
-            );
-            const guestsSnapshot = await getDocs(guestsQuery);
-            const guestsData = guestsSnapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data()
-            }));
             setGuests(guestsData);
         } catch (error) {
             console.error("Error fetching guests:", error);
@@ -127,6 +131,9 @@ const GuestList = () => {
     const formatData = (guests) => {
         return guests.map(guest => ({
             ...guest,
+            name: guest.name || guest.guestName || "—",
+            email: guest.email || guest.guestEmail || "—",
+            phoneNumber: guest.phoneNumber || guest.guestPhone || "—",
             checkInDate: formatDate(guest.checkInDate),
             checkOutDate: formatDate(guest.checkOutDate),
             amount: formatCurrency(guest.amount || 0),

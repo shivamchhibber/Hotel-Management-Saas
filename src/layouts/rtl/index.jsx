@@ -4,6 +4,7 @@ import Navbar from "components/navbar/RTL";
 import Sidebar from "components/sidebar/RTL";
 import Footer from "components/footer/Footer";
 import routes from "routes.js";
+import { BRAND } from "theme/brand";
 
 export default function RTL(props) {
   const { ...rest } = props;
@@ -70,12 +71,12 @@ export default function RTL(props) {
           <div className="h-full">
             <Navbar
               onOpenSidenav={() => setOpen(true)}
-              logoText={"Horizon UI Tailwind React"}
+              logoText={BRAND.name}
               brandText={currentRoute}
               secondary={getActiveNavbar(routes)}
               {...rest}
             />
-            <div className="pt-5s mx-auto mb-auto h-full min-h-[84vh] p-2 md:pr-2">
+            <div className="pt-5 mx-auto mb-auto h-full min-h-[84vh] p-2 md:pr-2">
               <Routes>
                 {getRoutes(routes)}
 

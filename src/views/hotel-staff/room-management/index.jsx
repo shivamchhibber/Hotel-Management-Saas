@@ -1,10 +1,15 @@
-import React, { useState, useEffect } from "react";
-import { collection, getDocs, doc, updateDoc, addDoc, query, where, orderBy, serverTimestamp, limit } from "firebase/firestore";
+import React, { useState, useEffect, useCallback } from "react";
+import { collection, getDocs, doc, updateDoc, addDoc, query, where, serverTimestamp } from "firebase/firestore";
 import { db } from "../../../firebase/config";
 import { useAuth } from "contexts/AuthContext";
+import { getHotelIdFromUserProfile } from "utils/userProfileUtils";
+import { formatCallableError } from "utils/callableError";
+import { staffListRoomsFn, staffUpdateRoomFn } from "utils/staffCallables";
+import GuestIdCaptureBlock from "components/guest/GuestIdCaptureBlock";
+import Modal from "components/ui/Modal";
+import BottomSheet from "components/ui/BottomSheet";
 import ComplexTable from "views/admin/default/components/ComplexTable";
 import {
-    MdHotel,
     MdBuild,
     MdPerson,
     MdEventAvailable,
@@ -13,7 +18,6 @@ import {
     MdRefresh,
     MdLogin,
     MdExitToApp,
-    MdInfo,
     MdClose
 } from "react-icons/md";
 
@@ -25,107 +29,169 @@ const StaffRoomManagement = () => {
     const [showCheckInModal, setShowCheckInModal] = useState(false);
     const [showGuestDetailsModal, setShowGuestDetailsModal] = useState(false);
     const [selectedRoom, setSelectedRoom] = useState(null);
+    const [showCheckoutModal, setShowCheckoutModal] = useState(false);
+    const [checkoutRoom, setCheckoutRoom] = useState(null);
+    const [checkoutExtraCharges, setCheckoutExtraCharges] = useState("0");
+    const [checkoutReason, setCheckoutReason] = useState("damages");
+    const [checkInHotelId, setCheckInHotelId] = useState(null);
     const [guestForm, setGuestForm] = useState({
         guestName: '',
         guestEmail: '',
         guestPhone: '',
-        guestId: '',
+        idDocumentType: 'aadhaar',
+        idDocumentNumber: '',
+        idImages: [],
         checkInDate: '',
         checkOutDate: '',
         numberOfGuests: 1,
         specialRequests: ''
     });
 
+    const fetchRooms = useCallback(async () => {
+        try {
+            setLoading(true);
+
+            let roomsData = [];
+            try {
+                const { data } = await staffListRoomsFn({});
+                roomsData = Array.isArray(data?.rooms) ? data.rooms : [];
+            } catch (callableErr) {
+                console.warn("staffListRooms callable failed; falling back to Firestore query:", callableErr);
+                const hotelId = await getHotelIdFromUserProfile(currentUser.uid);
+                if (!hotelId) {
+                    console.error(
+                        "No hotel ID on users/{uid}; staff must be created via owner → Add staff (callable), not only Auth console.",
+                    );
+                    setRooms([]);
+                    return;
+                }
+                const roomsQuery = query(collection(db, "rooms"), where("hotelId", "==", hotelId));
+                const roomsSnapshot = await getDocs(roomsQuery);
+                roomsData = roomsSnapshot.docs.map((d) => ({
+                    id: d.id,
+                    ...d.data(),
+                }));
+                roomsData.sort((a, b) => {
+                    const roomA = parseInt(a.roomNumber, 10) || 0;
+                    const roomB = parseInt(b.roomNumber, 10) || 0;
+                    return roomA - roomB;
+                });
+            }
+            setRooms(roomsData);
+        } catch (error) {
+            console.error("Error fetching rooms:", error);
+            const msg = String(error?.code || error?.message || "");
+            if (msg.includes("permission") || msg.includes("permissions")) {
+                console.error(
+                    "Firestore denied the rooms query. Deploy functions (staffListRooms) + grant invoker, deploy firestore.rules, and ensure users/{uid}.hotelId matches room.hotelId.",
+                );
+            }
+            if (msg.includes("functions/") || msg.includes("internal")) {
+                console.error(formatCallableError(error, "staffListRooms"));
+            }
+        } finally {
+            setLoading(false);
+        }
+    }, [currentUser]);
+
     useEffect(() => {
         if (currentUser) {
             fetchRooms();
         }
-    }, [currentUser]);
+    }, [currentUser, fetchRooms]);
 
-    const fetchRooms = async () => {
-        try {
-            setLoading(true);
-
-            // Get hotel ID for current staff member
-            const staffSnap = await getDocs(query(collection(db, "users"), where("uid", "==", currentUser.uid), limit(1)));
-            const staffDoc = staffSnap.docs[0];
-            
-            if (!staffDoc) {
-                console.error("Staff document not found");
-                return;
-            }
-
-            const staffData = staffDoc.data();
-            const hotelId = staffData.hotelId;
-
-            if (!hotelId) {
-                console.error("No hotel ID found for staff member");
-                return;
-            }
-
-            // Fetch rooms for this hotel
-            const roomsQuery = query(
-                collection(db, "rooms"),
-                where("hotelId", "==", hotelId)
-            );
-            const roomsSnapshot = await getDocs(roomsQuery);
-            const roomsData = roomsSnapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data()
-            }));
-            // Sort rooms by room number in JavaScript
-            roomsData.sort((a, b) => {
-                const roomA = parseInt(a.roomNumber) || 0;
-                const roomB = parseInt(b.roomNumber) || 0;
-                return roomA - roomB;
-            });
-            setRooms(roomsData);
-        } catch (error) {
-            console.error("Error fetching rooms:", error);
-        } finally {
-            setLoading(false);
+    useEffect(() => {
+        let cancelled = false;
+        if (!showCheckInModal || !currentUser?.uid) {
+            setCheckInHotelId(null);
+            return undefined;
         }
-    };
+        (async () => {
+            const hid = await getHotelIdFromUserProfile(currentUser.uid);
+            if (!cancelled) setCheckInHotelId(hid);
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [showCheckInModal, currentUser]);
 
-    const updateRoomStatus = async (roomId, newStatus, guestInfo = null) => {
+    const updateRoomStatus = async (roomId, newStatus, guestInfo = null, billing = null) => {
         try {
             setUpdating(true);
+            try {
+                const { data } = await staffUpdateRoomFn({
+                    roomId,
+                    status: newStatus,
+                    guestInfo: guestInfo || null,
+                    additionalCharges: billing?.additionalCharges ?? null,
+                    additionalChargeReason: billing?.additionalChargeReason ?? null,
+                    amount: billing?.amount ?? null,
+                });
+                if (data?.room) {
+                    setRooms((prev) =>
+                        prev.map((room) => (room.id === roomId ? { ...data.room } : room)),
+                    );
+                    return;
+                }
+            } catch (callableErr) {
+                console.warn("staffUpdateRoom failed; falling back to Firestore:", callableErr);
+            }
+
             const roomRef = doc(db, "rooms", roomId);
             const updateData = {
                 status: newStatus,
                 updatedAt: serverTimestamp(),
-                updatedBy: currentUser.uid
+                updatedBy: currentUser.uid,
             };
 
-            // If checking in, add guest information
-            if (newStatus === 'checked-in' && guestInfo) {
+            if (newStatus === "checked-in" && guestInfo) {
                 updateData.guestInfo = guestInfo;
                 updateData.checkInDate = serverTimestamp();
             }
 
-            // If checking out, clear guest information
-            if (newStatus === 'checked-out') {
+            if (newStatus === "checked-out") {
                 updateData.guestInfo = null;
                 updateData.checkOutDate = serverTimestamp();
             }
 
             await updateDoc(roomRef, updateData);
-            
-            // Log the action
             await logStaffAction(roomId, newStatus, guestInfo);
-            
-            // Update local state
-            setRooms(rooms.map(room =>
-                room.id === roomId
-                    ? { ...room, status: newStatus, ...updateData }
-                    : room
-            ));
+
+            setRooms((prev) =>
+                prev.map((room) => {
+                    if (room.id !== roomId) return room;
+                    return {
+                        ...room,
+                        status: newStatus,
+                        ...(newStatus === "checked-out" ? { guestInfo: null } : {}),
+                        ...(newStatus === "checked-in" && guestInfo ? { guestInfo } : {}),
+                    };
+                }),
+            );
         } catch (error) {
             console.error("Error updating room status:", error);
             alert("Error updating room status: " + error.message);
         } finally {
             setUpdating(false);
         }
+    };
+
+    const openCheckoutModal = (room) => {
+        setCheckoutRoom(room);
+        setCheckoutExtraCharges("0");
+        setCheckoutReason("damages");
+        setShowCheckoutModal(true);
+    };
+
+    const confirmCheckout = async () => {
+        if (!checkoutRoom) return;
+        const extra = Number(checkoutExtraCharges || 0);
+        await updateRoomStatus(checkoutRoom.id, "checked-out", null, {
+            additionalCharges: Number.isFinite(extra) ? extra : 0,
+            additionalChargeReason: checkoutReason,
+        });
+        setShowCheckoutModal(false);
+        setCheckoutRoom(null);
     };
 
     const logStaffAction = async (roomId, action, guestInfo = null) => {
@@ -159,7 +225,9 @@ const StaffRoomManagement = () => {
             guestName: '',
             guestEmail: '',
             guestPhone: '',
-            guestId: '',
+            idDocumentType: 'aadhaar',
+            idDocumentNumber: '',
+            idImages: [],
             checkInDate: new Date().toISOString().split('T')[0],
             checkOutDate: '',
             numberOfGuests: 1,
@@ -179,9 +247,21 @@ const StaffRoomManagement = () => {
 
         try {
             const guestInfo = {
-                ...guestForm,
+                guestName: guestForm.guestName,
+                guestEmail: guestForm.guestEmail,
+                guestPhone: guestForm.guestPhone,
+                guestId: guestForm.idDocumentNumber,
+                idDocumentType: guestForm.idDocumentType,
+                idDocumentNumber: guestForm.idDocumentNumber,
+                idDocumentImages: guestForm.idImages.map(({ url, type, fromProfile }) => ({
+                    url,
+                    type: type || guestForm.idDocumentType,
+                    fromProfile: !!fromProfile,
+                })),
                 checkInDate: new Date(guestForm.checkInDate),
                 checkOutDate: guestForm.checkOutDate ? new Date(guestForm.checkOutDate) : null,
+                numberOfGuests: guestForm.numberOfGuests,
+                specialRequests: guestForm.specialRequests,
                 checkedInBy: currentUser.uid,
                 checkedInAt: new Date()
             };
@@ -252,7 +332,7 @@ const StaffRoomManagement = () => {
                 actions.push(
                     <button
                         key="checkout"
-                        onClick={() => updateRoomStatus(room.id, 'checked-out')}
+                        onClick={() => openCheckoutModal(room)}
                         disabled={updating}
                         className="px-3 py-1 rounded text-xs font-medium bg-red-100 text-red-700 hover:bg-red-200 transition-colors"
                         title="Check-out Guest"
@@ -290,7 +370,7 @@ const StaffRoomManagement = () => {
                 actions.push(
                     <button
                         key="checkout"
-                        onClick={() => updateRoomStatus(room.id, 'checked-out')}
+                        onClick={() => openCheckoutModal(room)}
                         disabled={updating}
                         className="px-3 py-1 rounded text-xs font-medium bg-red-100 text-red-700 hover:bg-red-200 transition-colors"
                         title="Check-out Guest"
@@ -339,6 +419,8 @@ const StaffRoomManagement = () => {
                         Maintenance
                     </button>
                 );
+                break;
+            default:
                 break;
         }
 
@@ -462,161 +544,241 @@ const StaffRoomManagement = () => {
                 </ul>
             </div>
 
-            <ComplexTable
-                columnsData={roomColumns}
-                tableData={formatData(rooms)}
-            />
+            {/* Mobile-first room grid (easier than tables) */}
+            <div className="grid grid-cols-1 gap-4 md:hidden">
+                {rooms.map((room) => {
+                    const status = room.status || "available";
+                    const isCheckedIn = status === "checked-in" || status === "occupied";
+                    const primary =
+                        status === "available"
+                            ? { label: "Check-in", onClick: () => handleCheckIn(room), className: "bg-brand-500 hover:bg-brand-600" }
+                            : status === "checked-in" || status === "occupied"
+                                ? { label: "Check-out", onClick: () => openCheckoutModal(room), className: "bg-red-500 hover:bg-red-600" }
+                                : { label: "Mark available", onClick: () => updateRoomStatus(room.id, "available"), className: "bg-green-500 hover:bg-green-600" };
+                    const secondary =
+                        status === "available"
+                            ? { label: "Maintenance", onClick: () => updateRoomStatus(room.id, "maintenance"), className: "bg-yellow-500 hover:bg-yellow-600" }
+                            : status === "checked-in"
+                                ? { label: "Occupied", onClick: () => updateRoomStatus(room.id, "occupied"), className: "bg-orange-500 hover:bg-orange-600" }
+                                : null;
 
-            {/* Check-in Modal */}
-            {showCheckInModal && selectedRoom && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-                    <div className="bg-white dark:bg-navy-800 p-6 rounded-lg shadow-lg w-full max-w-md">
-                        <div className="flex items-center justify-between mb-4">
-                            <h3 className="text-lg font-semibold text-navy-700 dark:text-white">
-                                Check-in Guest - Room {selectedRoom.roomNumber}
-                            </h3>
-                            <button
-                                onClick={() => setShowCheckInModal(false)}
-                                className="text-gray-400 hover:text-gray-600"
-                            >
-                                <MdClose className="h-5 w-5" />
-                            </button>
-                        </div>
-
-                        <form onSubmit={handleCheckInSubmit} className="space-y-4">
-                            <div>
-                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                    Guest Name *
-                                </label>
-                                <input
-                                    type="text"
-                                    required
-                                    value={guestForm.guestName}
-                                    onChange={(e) => setGuestForm({...guestForm, guestName: e.target.value})}
-                                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500"
-                                    placeholder="Enter guest full name"
-                                />
+                    return (
+                        <div key={room.id} className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5 dark:bg-navy-800 dark:ring-white/10">
+                            <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400">Room</p>
+                                    <p className="text-2xl font-semibold text-navy-700 dark:text-white">{room.roomNumber || "—"}</p>
+                                </div>
+                                <span className={`px-3 py-1 rounded-full text-xs font-semibold ${getStatusColor(status)}`}>
+                                    {status.replace("-", " ")}
+                                </span>
                             </div>
 
-                            <div>
-                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                    Guest Email
-                                </label>
-                                <input
-                                    type="email"
-                                    value={guestForm.guestEmail}
-                                    onChange={(e) => setGuestForm({...guestForm, guestEmail: e.target.value})}
-                                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500"
-                                    placeholder="guest@example.com"
-                                />
-                            </div>
-
-                            <div>
-                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                    Guest Phone *
-                                </label>
-                                <input
-                                    type="tel"
-                                    required
-                                    value={guestForm.guestPhone}
-                                    onChange={(e) => setGuestForm({...guestForm, guestPhone: e.target.value})}
-                                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500"
-                                    placeholder="+91 9876543210"
-                                />
-                            </div>
-
-                            <div>
-                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                    ID Number
-                                </label>
-                                <input
-                                    type="text"
-                                    value={guestForm.guestId}
-                                    onChange={(e) => setGuestForm({...guestForm, guestId: e.target.value})}
-                                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500"
-                                    placeholder="Aadhar/PAN/Passport number"
-                                />
-                            </div>
-
-                            <div className="grid grid-cols-2 gap-4">
+                            <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
                                 <div>
-                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                        Check-in Date *
-                                    </label>
-                                    <input
-                                        type="date"
-                                        required
-                                        value={guestForm.checkInDate}
-                                        onChange={(e) => setGuestForm({...guestForm, checkInDate: e.target.value})}
-                                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500"
-                                    />
+                                    <p className="text-xs text-gray-500 dark:text-gray-400">Type</p>
+                                    <p className="font-medium text-navy-700 dark:text-white">{room.roomType || "—"}</p>
                                 </div>
                                 <div>
-                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                        Check-out Date
-                                    </label>
-                                    <input
-                                        type="date"
-                                        value={guestForm.checkOutDate}
-                                        onChange={(e) => setGuestForm({...guestForm, checkOutDate: e.target.value})}
-                                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500"
-                                    />
+                                    <p className="text-xs text-gray-500 dark:text-gray-400">Price</p>
+                                    <p className="font-medium text-navy-700 dark:text-white">₹{room.price || 0}</p>
                                 </div>
                             </div>
 
-                            <div>
-                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                    Number of Guests *
-                                </label>
-                                <input
-                                    type="number"
-                                    min="1"
-                                    max="10"
-                                    required
-                                    value={guestForm.numberOfGuests}
-                                    onChange={(e) => setGuestForm({...guestForm, numberOfGuests: parseInt(e.target.value)})}
-                                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500"
-                                />
-                            </div>
-
-                            <div>
-                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                    Special Requests
-                                </label>
-                                <textarea
-                                    value={guestForm.specialRequests}
-                                    onChange={(e) => setGuestForm({...guestForm, specialRequests: e.target.value})}
-                                    rows="3"
-                                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500"
-                                    placeholder="Any special requests or notes..."
-                                />
-                            </div>
-
-                            <div className="flex gap-3 pt-4">
+                            {isCheckedIn && room.guestInfo?.guestName ? (
                                 <button
                                     type="button"
-                                    onClick={() => setShowCheckInModal(false)}
-                                    className="flex-1 px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 transition-colors"
+                                    onClick={() => handleShowGuestDetails(room)}
+                                    className="mt-3 w-full rounded-xl bg-gray-50 px-3 py-2 text-left text-sm text-navy-700 hover:bg-gray-100 dark:bg-navy-900 dark:text-white dark:hover:bg-navy-700"
                                 >
-                                    Cancel
+                                    Guest: <span className="font-semibold">{room.guestInfo.guestName}</span>
                                 </button>
+                            ) : null}
+
+                            <div className="mt-4 grid grid-cols-2 gap-3">
                                 <button
-                                    type="submit"
+                                    type="button"
                                     disabled={updating}
-                                    className="flex-1 px-4 py-2 bg-brand-500 text-white rounded-md hover:bg-brand-600 disabled:opacity-50 transition-colors"
+                                    onClick={primary.onClick}
+                                    className={`h-12 rounded-2xl text-base font-semibold text-white disabled:opacity-50 ${primary.className}`}
                                 >
-                                    {updating ? 'Processing...' : 'Check-in Guest'}
+                                    {primary.label}
                                 </button>
+                                {secondary ? (
+                                    <button
+                                        type="button"
+                                        disabled={updating}
+                                        onClick={secondary.onClick}
+                                        className={`h-12 rounded-2xl text-base font-semibold text-white disabled:opacity-50 ${secondary.className}`}
+                                    >
+                                        {secondary.label}
+                                    </button>
+                                ) : (
+                                    <button
+                                        type="button"
+                                        disabled
+                                        className="h-12 rounded-2xl bg-gray-200 text-base font-semibold text-gray-500 opacity-60 dark:bg-navy-900 dark:text-gray-400"
+                                    >
+                                        —
+                                    </button>
+                                )}
                             </div>
-                        </form>
+                        </div>
+                    );
+                })}
+            </div>
+
+            {/* Desktop table */}
+            <div className="hidden md:block">
+                <ComplexTable
+                    columnsData={roomColumns}
+                    tableData={formatData(rooms)}
+                />
+            </div>
+
+            {/* Check-in Modal */}
+            <Modal
+                open={showCheckInModal && !!selectedRoom}
+                title={selectedRoom ? `Check-in · Room ${selectedRoom.roomNumber}` : "Check-in"}
+                onClose={() => setShowCheckInModal(false)}
+                maxWidthClass="max-w-md"
+            >
+                <form onSubmit={handleCheckInSubmit} className="space-y-4">
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            Guest Name *
+                        </label>
+                        <input
+                            type="text"
+                            required
+                            value={guestForm.guestName}
+                            onChange={(e) => setGuestForm({ ...guestForm, guestName: e.target.value })}
+                            className="al-input"
+                            placeholder="Enter guest full name"
+                        />
                     </div>
-                </div>
-            )}
+
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            Guest Email
+                        </label>
+                        <input
+                            type="email"
+                            value={guestForm.guestEmail}
+                            onChange={(e) => setGuestForm({ ...guestForm, guestEmail: e.target.value })}
+                            className="al-input"
+                            placeholder="guest@example.com"
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            Guest Phone *
+                        </label>
+                        <input
+                            type="tel"
+                            required
+                            value={guestForm.guestPhone}
+                            onChange={(e) => setGuestForm({ ...guestForm, guestPhone: e.target.value })}
+                            className="al-input"
+                            placeholder="+91 9876543210"
+                        />
+                    </div>
+
+                    <GuestIdCaptureBlock
+                        staffUid={currentUser?.uid}
+                        hotelId={checkInHotelId}
+                        email={guestForm.guestEmail}
+                        phone={guestForm.guestPhone}
+                        idDocumentType={guestForm.idDocumentType}
+                        setIdDocumentType={(v) => setGuestForm((f) => ({ ...f, idDocumentType: v }))}
+                        idDocumentNumber={guestForm.idDocumentNumber}
+                        setIdDocumentNumber={(v) => setGuestForm((f) => ({ ...f, idDocumentNumber: v }))}
+                        idImages={guestForm.idImages}
+                        setIdImages={(updater) =>
+                            setGuestForm((f) => ({
+                                ...f,
+                                idImages: typeof updater === "function" ? updater(f.idImages) : updater,
+                            }))
+                        }
+                    />
+
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                Check-in Date *
+                            </label>
+                            <input
+                                type="date"
+                                required
+                                value={guestForm.checkInDate}
+                                onChange={(e) => setGuestForm({ ...guestForm, checkInDate: e.target.value })}
+                                className="al-input"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                Check-out Date
+                            </label>
+                            <input
+                                type="date"
+                                value={guestForm.checkOutDate}
+                                onChange={(e) => setGuestForm({ ...guestForm, checkOutDate: e.target.value })}
+                                className="al-input"
+                            />
+                        </div>
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            Number of Guests *
+                        </label>
+                        <input
+                            type="number"
+                            min="1"
+                            max="10"
+                            required
+                            value={guestForm.numberOfGuests}
+                            onChange={(e) =>
+                                setGuestForm({ ...guestForm, numberOfGuests: parseInt(e.target.value) })
+                            }
+                            className="al-input"
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            Special Requests
+                        </label>
+                        <textarea
+                            value={guestForm.specialRequests}
+                            onChange={(e) => setGuestForm({ ...guestForm, specialRequests: e.target.value })}
+                            rows="3"
+                            className="al-input"
+                            placeholder="Any special requests or notes..."
+                        />
+                    </div>
+
+                    <div className="flex gap-3 pt-4">
+                        <button
+                            type="button"
+                            onClick={() => setShowCheckInModal(false)}
+                            className="flex-1 al-btn-secondary"
+                        >
+                            Cancel
+                        </button>
+                        <button type="submit" disabled={updating} className="flex-1 al-btn-primary">
+                            {updating ? "Processing..." : "Check-in Guest"}
+                        </button>
+                    </div>
+                </form>
+            </Modal>
 
             {/* Guest Details Modal */}
             {showGuestDetailsModal && selectedRoom && selectedRoom.guestInfo && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-                    <div className="bg-white dark:bg-navy-800 p-6 rounded-lg shadow-lg w-full max-w-md">
+                <div className="fixed inset-0 z-50 overflow-y-auto bg-black/60 p-4">
+                    <div className="min-h-full flex items-start justify-center py-6">
+                        <div className="bg-white dark:bg-navy-800 p-6 rounded-2xl shadow-lg w-full max-w-md max-h-[85vh] overflow-y-auto">
                         <div className="flex items-center justify-between mb-4">
                             <h3 className="text-lg font-semibold text-navy-700 dark:text-white">
                                 Guest Details - Room {selectedRoom.roomNumber}
@@ -735,16 +897,125 @@ const StaffRoomManagement = () => {
                                 Close
                             </button>
                         </div>
+                        </div>
                     </div>
                 </div>
             )}
 
+            {(() => {
+                const checkoutFooter = (
+                    <div className="flex gap-3">
+                        <button
+                            type="button"
+                            onClick={() => setShowCheckoutModal(false)}
+                            className="flex-1 al-btn-secondary"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            type="button"
+                            disabled={updating}
+                            onClick={confirmCheckout}
+                            className="flex-1 al-btn-danger"
+                        >
+                            Confirm checkout
+                        </button>
+                    </div>
+                );
+
+                const checkoutContent = checkoutRoom ? (
+                    <>
+                        <p className="text-sm text-gray-600 dark:text-gray-300">
+                            Room <strong>{checkoutRoom.roomNumber}</strong>
+                            {checkoutRoom.guestInfo?.guestName ? ` · ${checkoutRoom.guestInfo.guestName}` : ""}
+                        </p>
+
+                        <div className="mt-4">
+                            <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                                Extra charges reason
+                            </label>
+                            <select
+                                value={checkoutReason}
+                                onChange={(e) => setCheckoutReason(e.target.value)}
+                                className="al-input"
+                            >
+                                <option value="damages">Damages</option>
+                                <option value="minibar">Minibar</option>
+                                <option value="late_checkout">Late checkout</option>
+                                <option value="other">Other</option>
+                            </select>
+                        </div>
+
+                        <div className="mt-4">
+                            <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                                Extra charges (₹)
+                            </label>
+                            <input
+                                type="number"
+                                min="0"
+                                inputMode="numeric"
+                                value={checkoutExtraCharges}
+                                onChange={(e) => setCheckoutExtraCharges(e.target.value)}
+                                className="al-input"
+                                placeholder="0"
+                            />
+                            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                                Damages, minibar, late checkout, etc.
+                            </p>
+                        </div>
+
+                        <div className="mt-4 rounded-2xl bg-gray-50 p-4 text-sm text-gray-700 dark:bg-navy-900 dark:text-gray-200">
+                            <div className="flex items-center justify-between">
+                                <span>Room rate (per night)</span>
+                                <span className="font-semibold">₹{Number(checkoutRoom.price || 0) || 0}</span>
+                            </div>
+                            <div className="mt-1 flex items-center justify-between">
+                                <span>Extra charges</span>
+                                <span className="font-semibold">₹{Number(checkoutExtraCharges || 0) || 0}</span>
+                            </div>
+                            <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                                Final total is calculated automatically on checkout.
+                            </p>
+                        </div>
+                    </>
+                ) : null;
+
+                return (
+                    <>
+                        <div className="md:hidden">
+                            <BottomSheet
+                                open={showCheckoutModal && !!checkoutRoom}
+                                title={checkoutRoom ? `Checkout · Room ${checkoutRoom.roomNumber}` : "Checkout"}
+                                onClose={() => setShowCheckoutModal(false)}
+                                footer={checkoutFooter}
+                            >
+                                {checkoutContent}
+                            </BottomSheet>
+                        </div>
+
+                        <div className="hidden md:block">
+                            <Modal
+                                open={showCheckoutModal && !!checkoutRoom}
+                                title={checkoutRoom ? `Checkout · Room ${checkoutRoom.roomNumber}` : "Checkout"}
+                                onClose={() => setShowCheckoutModal(false)}
+                                maxWidthClass="max-w-md"
+                                footer={checkoutFooter}
+                            >
+                                {checkoutContent}
+                            </Modal>
+                        </div>
+                    </>
+                );
+            })()}
+
             {updating && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-                    <div className="bg-white dark:bg-navy-800 p-6 rounded-lg shadow-lg">
+                <div className="fixed inset-0 z-50 overflow-y-auto bg-black/60 p-4">
+                    <div className="min-h-full flex items-center justify-center py-6">
+                        <div className="bg-white dark:bg-navy-800 p-6 rounded-2xl shadow-lg max-w-md w-full">
                         <div className="flex items-center gap-3">
                             <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-brand-500"></div>
                             <span className="text-navy-700 dark:text-white">Updating room status...</span>
+                        </div>
                         </div>
                     </div>
                 </div>

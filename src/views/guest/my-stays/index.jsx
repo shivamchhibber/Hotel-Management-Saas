@@ -1,15 +1,12 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { collection, getDocs, query, where, orderBy } from "firebase/firestore";
 import { db } from "../../../firebase/config";
 import { useAuth } from "contexts/AuthContext";
-import CheckTable from "views/admin/default/components/CheckTable";
 import {
     MdHotel,
     MdCalendarToday,
     MdAttachMoney,
     MdRoom,
-    MdCheckCircle,
-    MdCancel,
     MdSearch
 } from "react-icons/md";
 
@@ -21,17 +18,7 @@ const MyStays = () => {
     const [searchTerm, setSearchTerm] = useState("");
     const [filterStatus, setFilterStatus] = useState("all");
 
-    useEffect(() => {
-        if (currentUser) {
-            fetchStays();
-        }
-    }, [currentUser]);
-
-    useEffect(() => {
-        filterStays();
-    }, [stays, searchTerm, filterStatus]);
-
-    const fetchStays = async () => {
+    const fetchStays = useCallback(async () => {
         try {
             setLoading(true);
 
@@ -80,9 +67,9 @@ const MyStays = () => {
         } finally {
             setLoading(false);
         }
-    };
+    }, [currentUser]);
 
-    const filterStays = () => {
+    const filterStays = useCallback(() => {
         let filtered = stays;
 
         // Filter by search term
@@ -106,7 +93,17 @@ const MyStays = () => {
         }
 
         setFilteredStays(filtered);
-    };
+    }, [stays, searchTerm, filterStatus]);
+
+    useEffect(() => {
+        if (currentUser) {
+            fetchStays();
+        }
+    }, [currentUser, fetchStays]);
+
+    useEffect(() => {
+        filterStays();
+    }, [filterStays]);
 
     const getStatusColor = (isCheckedOut) => {
         return isCheckedOut
@@ -129,29 +126,6 @@ const MyStays = () => {
             style: 'currency',
             currency: 'INR'
         }).format(amount);
-    };
-
-    const stayColumns = [
-        { Header: "Hotel", accessor: "hotelName" },
-        { Header: "Room", accessor: "roomNumber" },
-        { Header: "Check-in Date", accessor: "checkInDate" },
-        { Header: "Check-out Date", accessor: "checkOutDate" },
-        { Header: "Amount", accessor: "amount" },
-        { Header: "Status", accessor: "status" },
-    ];
-
-    const formatData = (stays) => {
-        return stays.map(stay => ({
-            ...stay,
-            checkInDate: formatDate(stay.checkInDate),
-            checkOutDate: formatDate(stay.checkOutDate),
-            amount: formatCurrency(stay.amount || 0),
-            status: (
-                <span className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(stay.isCheckedOut)}`}>
-                    {getStatusText(stay.isCheckedOut)}
-                </span>
-            )
-        }));
     };
 
     if (loading) {

@@ -1,7 +1,9 @@
-import React, { useState, useEffect } from "react";
-import { collection, getDocs, getDoc, doc, query, where, orderBy, limit } from "firebase/firestore";
+import React, { useState, useEffect, useCallback } from "react";
+import { getDoc, doc } from "firebase/firestore";
 import { db } from "../../../firebase/config";
 import { useAuth } from "../../../contexts/AuthContext";
+import { getHotelIdFromUserProfile } from "utils/userProfileUtils";
+import { staffListMyStaffActionsFn } from "utils/staffCallables";
 import {
     MdPerson,
     MdEmail,
@@ -21,32 +23,21 @@ const StaffProfile = () => {
     const [loading, setLoading] = useState(true);
     const [hotelInfo, setHotelInfo] = useState(null);
 
-    useEffect(() => {
-        if (currentUser) {
-            fetchStaffInfo();
-            fetchActionHistory();
-        }
-    }, [currentUser]);
-
-
-    const fetchStaffInfo = async () => {
+    const fetchStaffInfo = useCallback(async () => {
         try {
             if (currentUser?.uid) {
-                // First get the user document to get hotelId
-                const userDoc = await getDoc(doc(db, "users", currentUser.uid));
-                const userData = userDoc.exists() ? userDoc.data() : {};
-                
+                const hotelIdStr = (await getHotelIdFromUserProfile(currentUser.uid)) || "";
+
                 setStaffInfo({
-                    displayName: currentUser.displayName || 'Staff Member',
-                    email: currentUser.email || '',
-                    phoneNumber: currentUser.phoneNumber || '',
-                    role: 'Hotel Staff',
-                    hotelId: userData.hotelId || ''
+                    displayName: currentUser.displayName || "Staff Member",
+                    email: currentUser.email || "",
+                    phoneNumber: currentUser.phoneNumber || "",
+                    role: "Hotel Staff",
+                    hotelId: hotelIdStr,
                 });
 
-                // Fetch hotel information
-                if (userData.hotelId) {
-                    const hotelDoc = await getDoc(doc(db, "hotels", userData.hotelId));
+                if (hotelIdStr) {
+                    const hotelDoc = await getDoc(doc(db, "hotels", hotelIdStr));
                     if (hotelDoc.exists()) {
                         const hotelData = hotelDoc.data();
                         setHotelInfo({
@@ -60,54 +51,41 @@ const StaffProfile = () => {
         } catch (error) {
             console.error("Error fetching staff info:", error);
         }
-    };
+    }, [currentUser]);
 
-    const fetchActionHistory = async () => {
+    const fetchActionHistory = useCallback(async () => {
         try {
-            if (currentUser?.uid) {
-                // Get user document to get hotelId
-                const userDoc = await getDoc(doc(db, "users", currentUser.uid));
-                const userData = userDoc.exists() ? userDoc.data() : {};
-                
-                console.log('User data:', userData);
-                console.log('Hotel ID:', userData.hotelId);
-                console.log('Staff ID:', currentUser.uid);
-                
-                if (userData.hotelId) {
-                    const actionsQuery = query(
-                        collection(db, "staff_actions"),
-                        where("hotelId", "==", userData.hotelId),
-                        where("staffId", "==", currentUser.uid)
-                    );
-                    const actionsSnapshot = await getDocs(actionsQuery);
-                    console.log('Actions snapshot size:', actionsSnapshot.docs.length);
-                    
-                    const actionsData = actionsSnapshot.docs.map(doc => ({
-                        id: doc.id,
-                        ...doc.data()
-                    }));
-                    console.log('Actions data:', actionsData);
-                    
-                    // Sort by timestamp in JavaScript to avoid Firebase index issues
-                    actionsData.sort((a, b) => {
-                        const dateA = a.timestamp?.toDate() || new Date(0);
-                        const dateB = b.timestamp?.toDate() || new Date(0);
-                        return dateB - dateA; // Most recent first
-                    });
-                    setActionHistory(actionsData.slice(0, 20)); // Limit to 20 most recent
-                } else {
-                    console.log('No hotelId found for user');
-                }
+            if (!currentUser?.uid) {
+                setLoading(false);
+                return;
             }
+            let actionsData = [];
+            try {
+                const { data } = await staffListMyStaffActionsFn({});
+                actionsData = Array.isArray(data?.actions) ? data.actions : [];
+            } catch (callableErr) {
+                console.warn("staffListMyStaffActions failed:", callableErr);
+            }
+            setActionHistory(actionsData.slice(0, 20));
         } catch (error) {
             console.error("Error fetching action history:", error);
         } finally {
             setLoading(false);
         }
-    };
+    }, [currentUser]);
+
+    useEffect(() => {
+        if (currentUser) {
+            fetchStaffInfo();
+            fetchActionHistory();
+        }
+    }, [currentUser, fetchStaffInfo, fetchActionHistory]);
 
     const formatTimestamp = (timestamp) => {
-        if (!timestamp) return 'Unknown';
+        if (timestamp == null || timestamp === "") return "Unknown";
+        if (typeof timestamp === "number") {
+            return new Date(timestamp).toLocaleString();
+        }
         const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
         return date.toLocaleString();
     };

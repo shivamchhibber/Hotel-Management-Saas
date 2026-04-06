@@ -13,7 +13,6 @@ import {
     MdPeople,
     MdPerson,
     MdBarChart,
-    MdSettings,
     MdHotel,
 } from "react-icons/md";
 

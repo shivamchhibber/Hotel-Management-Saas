@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from "react";
 import { collection, getDocs, doc, updateDoc, query, where } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
-import { db, functions } from "../../../firebase/config";
+import { db, functions, HTTPS_CALLABLE_LONG_TIMEOUT_MS } from "../../../firebase/config";
+import { useAuth } from "contexts/AuthContext";
+import { formatCallableError } from "utils/callableError";
 import ComplexTable from "views/admin/default/components/ComplexTable";
 import {
     MdEdit,
@@ -12,7 +14,8 @@ import {
 
 function createdAtMs(data) {
     const c = data?.createdAt;
-    if (!c) return 0;
+    if (c == null) return 0;
+    if (typeof c === "number") return c;
     if (typeof c.toMillis === "function") return c.toMillis();
     if (typeof c.toDate === "function") return c.toDate().getTime();
     if (typeof c.seconds === "number") return c.seconds * 1000;
@@ -20,7 +23,23 @@ function createdAtMs(data) {
     return 0;
 }
 
+function formatCreatedAtDisplay(value) {
+    if (value == null || value === "") return "";
+    if (typeof value === "number") return new Date(value).toLocaleString();
+    if (typeof value.toDate === "function") return value.toDate().toLocaleString();
+    if (typeof value.seconds === "number") return new Date(value.seconds * 1000).toLocaleString();
+    return "";
+}
+
+const superAdminListHotels = httpsCallable(functions, "superAdminListHotels", {
+    timeout: HTTPS_CALLABLE_LONG_TIMEOUT_MS,
+});
+const superAdminCreateHotel = httpsCallable(functions, "superAdminCreateHotel", {
+    timeout: HTTPS_CALLABLE_LONG_TIMEOUT_MS,
+});
+
 const HotelManagement = () => {
+    const { currentUser } = useAuth();
     const [hotels, setHotels] = useState([]);
     const [loading, setLoading] = useState(true);
     const [selectedHotel, setSelectedHotel] = useState(null);
@@ -63,10 +82,9 @@ const HotelManagement = () => {
     const fetchHotels = async () => {
         try {
             setLoading(true);
-            const hotelsSnapshot = await getDocs(collection(db, "hotels"));
-            const hotelsData = hotelsSnapshot.docs
-                .map((d) => ({ id: d.id, ...d.data() }))
-                .sort((a, b) => createdAtMs(b) - createdAtMs(a));
+            const result = await superAdminListHotels();
+            const list = Array.isArray(result.data?.hotels) ? result.data.hotels : [];
+            const hotelsData = list.sort((a, b) => createdAtMs(b) - createdAtMs(a));
             setHotels(hotelsData);
         } catch (error) {
             console.error("Error fetching hotels:", error);
@@ -93,8 +111,10 @@ const HotelManagement = () => {
         setSaving(true);
         setSaveError("");
         try {
+            if (currentUser) {
+                await currentUser.getIdToken(true);
+            }
             const t = (v) => (typeof v === "string" ? v : "").trim();
-            const superAdminCreateHotel = httpsCallable(functions, "superAdminCreateHotel");
             await superAdminCreateHotel({
                 ownerEmail: t(newHotel.ownerEmail),
                 hotel: {
@@ -116,18 +136,27 @@ const HotelManagement = () => {
             await fetchHotels();
             await fetchOwners();
         } catch (e) {
+            const base = formatCallableError(e, "Could not create hotel (superAdminCreateHotel).");
             const code = String(e?.code || "");
-            const msg = String(e?.message || e || "");
-            const details = e?.details != null ? String(e.details) : "";
-            const combined = [code && code !== "unknown" ? code : "", msg, details]
-                .filter(Boolean)
-                .join(" — ");
-            const display =
-                code === "functions/internal" || msg === "internal"
-                    ? `Callable failed (${combined || "functions/internal"}). Deploy latest functions (firebase deploy --only functions), then check Functions → Logs for superAdminCreateHotel. Common causes: owner email not in Authentication, or an error during Firestore write.`
-                    : combined || msg;
-            setSaveError(display);
-            console.error("Error saving hotel:", e);
+            const msg = String(e?.message || "").toLowerCase();
+            const ownerHint =
+                code === "functions/failed-precondition" ||
+                msg.includes("owner must create") ||
+                msg.includes("sign up") ||
+                msg.includes("user-not-found")
+                    ? "\n\nThat usually means there is no user with that email in Firebase Authentication for this project (sign up first), or the email has a typo/extra space."
+                    : "";
+            const internalTip =
+                code === "functions/internal" || msg.includes("internal")
+                    ? "\n\nCallable errors are not caused by localhost. Open Firebase Console → Functions → superAdminCreateHotel → Logs for the real stack trace."
+                    : "";
+            setSaveError(base + ownerHint + internalTip);
+            console.error("Error saving hotel (inspect code, message, details):", {
+                code: e?.code,
+                message: e?.message,
+                details: e?.details,
+                customData: e?.customData,
+            });
         } finally {
             setSaving(false);
         }
@@ -148,9 +177,7 @@ const HotelManagement = () => {
         return hotels.map(hotel => ({
             ...hotel,
             ownerDisplay: ownerIdToUser[hotel.ownerId]?.displayName || ownerIdToUser[hotel.ownerId]?.email || hotel.ownerId,
-            createdAtFormatted: hotel.createdAt && typeof hotel.createdAt.toDate === 'function'
-                ? hotel.createdAt.toDate().toLocaleString()
-                : (hotel.createdAt ? new Date(hotel.createdAt).toLocaleString() : ''),
+            createdAtFormatted: formatCreatedAtDisplay(hotel.createdAt),
             status: (
                 <div className="flex items-center gap-2">
                     <span className={`px-2 py-1 rounded-full text-xs font-medium ${hotel.isActive ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>

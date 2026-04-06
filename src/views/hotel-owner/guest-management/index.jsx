@@ -1,16 +1,18 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { collection, getDocs, query, where, doc, updateDoc } from "firebase/firestore";
 import { db } from "../../../firebase/config";
 import { useAuth } from "contexts/AuthContext";
 import { resolveHotelIdForOwner } from "utils/hotelOwnerUtils";
+import { ownerListRoomsFn, ownerListGuestsFn, ownerListStaysFn } from "utils/ownerCallables";
+import { mergeOwnerGuestView } from "utils/ownerGuestMerge";
 import ComplexTable from "views/admin/default/components/ComplexTable";
 import {
-    MdPeople,
     MdSearch,
     MdFilterList,
     MdInfo,
     MdClose
 } from "react-icons/md";
+import { idDocumentTypeLabel } from "utils/idDocuments";
 
 const GuestManagement = () => {
     const { currentUser } = useAuth();
@@ -22,103 +24,111 @@ const GuestManagement = () => {
     const [showGuestDetails, setShowGuestDetails] = useState(false);
     const [selectedGuest, setSelectedGuest] = useState(null);
 
-    useEffect(() => {
-        if (currentUser) {
-            fetchGuests();
-        }
-    }, [currentUser]);
+    const printSelectedGuest = () => {
+        if (!selectedGuest) return;
+        const w = window.open("", "_blank", "noopener,noreferrer,width=900,height=700");
+        if (!w) return;
+        const staysHtml = (selectedGuest.stays || [])
+            .map((s, idx) => {
+                const idLine = s.idDocumentType
+                    ? `${idDocumentTypeLabel(s.idDocumentType)}${s.idProof ? ` · ${s.idProof}` : ""}`
+                    : s.idProof || "";
+                const amountLine =
+                    s.amount != null
+                        ? `Amount: ₹${s.amount}${s.additionalCharges ? ` (Additional: ₹${s.additionalCharges})` : ""}`
+                        : "";
+                return `
+                  <tr>
+                    <td style="padding:8px;border:1px solid #ddd;">${idx + 1}</td>
+                    <td style="padding:8px;border:1px solid #ddd;">${s.roomNumber || ""}</td>
+                    <td style="padding:8px;border:1px solid #ddd;">${s.roomStatus || ""}</td>
+                    <td style="padding:8px;border:1px solid #ddd;">${s.checkedInAt ? new Date(s.checkedInAt.toDate ? s.checkedInAt.toDate() : s.checkedInAt).toLocaleString() : ""}</td>
+                    <td style="padding:8px;border:1px solid #ddd;">${s.checkOutDate ? new Date(s.checkOutDate.toDate ? s.checkOutDate.toDate() : s.checkOutDate).toLocaleString() : ""}</td>
+                    <td style="padding:8px;border:1px solid #ddd;">${idLine}</td>
+                    <td style="padding:8px;border:1px solid #ddd;">${amountLine}</td>
+                  </tr>`;
+            })
+            .join("");
+        w.document.write(`
+          <html>
+            <head>
+              <title>Guest Check-in Details</title>
+              <meta name="viewport" content="width=device-width, initial-scale=1" />
+            </head>
+            <body style="font-family: system-ui, -apple-system, Segoe UI, sans-serif; padding: 20px;">
+              <h2 style="margin:0 0 6px;">Guest Check-in Details</h2>
+              <div style="margin:0 0 16px;color:#444;">
+                <div><strong>Name:</strong> ${selectedGuest.guestName || ""}</div>
+                <div><strong>Email:</strong> ${selectedGuest.guestEmail || ""}</div>
+                <div><strong>Phone:</strong> ${selectedGuest.guestPhone || ""}</div>
+              </div>
+              <table style="border-collapse:collapse;width:100%;font-size:12px;">
+                <thead>
+                  <tr>
+                    <th style="text-align:left;padding:8px;border:1px solid #ddd;">#</th>
+                    <th style="text-align:left;padding:8px;border:1px solid #ddd;">Room</th>
+                    <th style="text-align:left;padding:8px;border:1px solid #ddd;">Status</th>
+                    <th style="text-align:left;padding:8px;border:1px solid #ddd;">Check-in</th>
+                    <th style="text-align:left;padding:8px;border:1px solid #ddd;">Check-out</th>
+                    <th style="text-align:left;padding:8px;border:1px solid #ddd;">ID</th>
+                    <th style="text-align:left;padding:8px;border:1px solid #ddd;">Payment</th>
+                  </tr>
+                </thead>
+                <tbody>${staysHtml}</tbody>
+              </table>
+              <script>
+                setTimeout(() => { window.print(); }, 250);
+              </script>
+            </body>
+          </html>
+        `);
+        w.document.close();
+    };
 
-    useEffect(() => {
-        filterGuests();
-    }, [guests, searchTerm, filterStatus]);
-
-    const fetchGuests = async () => {
+    const fetchGuests = useCallback(async () => {
         try {
             setLoading(true);
 
-            const hotelId = await resolveHotelIdForOwner(currentUser.uid);
+            let roomsData = [];
+            let ledgerGuests = [];
+            let staysData = [];
 
-            if (!hotelId) {
-                console.error("No hotel ID found for owner");
-                setGuests([]);
-                setFilteredGuests([]);
-                return;
+            try {
+                const [roomsRes, guestsRes, staysRes] = await Promise.all([
+                    ownerListRoomsFn({}),
+                    ownerListGuestsFn({}),
+                    ownerListStaysFn({}),
+                ]);
+                roomsData = Array.isArray(roomsRes.data?.rooms) ? roomsRes.data.rooms : [];
+                ledgerGuests = Array.isArray(guestsRes.data?.guests) ? guestsRes.data.guests : [];
+                staysData = Array.isArray(staysRes.data?.stays) ? staysRes.data.stays : [];
+            } catch (callableErr) {
+                console.warn("ownerListRooms / ownerListGuests failed; falling back to Firestore:", callableErr);
+                const hotelId = await resolveHotelIdForOwner(currentUser.uid);
+                if (!hotelId) {
+                    console.error("No hotel ID found for owner");
+                    setGuests([]);
+                    setFilteredGuests([]);
+                    return;
+                }
+                const roomsQuery = query(collection(db, "rooms"), where("hotelId", "==", hotelId));
+                const roomsSnapshot = await getDocs(roomsQuery);
+                roomsData = roomsSnapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+                const guestsQuery = query(collection(db, "guests"), where("hotelId", "==", hotelId));
+                const guestsSnapshot = await getDocs(guestsQuery);
+                ledgerGuests = guestsSnapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
             }
 
-            // Fetch all rooms for this hotel
-            const roomsQuery = query(
-                collection(db, "rooms"),
-                where("hotelId", "==", hotelId)
-            );
-            const roomsSnapshot = await getDocs(roomsQuery);
-            const roomsData = roomsSnapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data()
-            }));
-
-            // Extract guest information from rooms and aggregate by guest
-            const guestMap = new Map();
-
-            roomsData.forEach(room => {
-                if (room.guestInfo) {
-                    const guestKey = `${room.guestInfo.guestEmail}_${room.guestInfo.guestPhone}`;
-                    
-                    if (guestMap.has(guestKey)) {
-                        // Guest already exists, increment stay count
-                        const existingGuest = guestMap.get(guestKey);
-                        existingGuest.stayCount += 1;
-                        existingGuest.stays.push({
-                            roomNumber: room.roomNumber,
-                            checkInDate: room.guestInfo.checkInDate,
-                            checkOutDate: room.guestInfo.checkOutDate,
-                            checkedInAt: room.guestInfo.checkedInAt,
-                            checkedInBy: room.guestInfo.checkedInBy,
-                            specialRequests: room.guestInfo.specialRequests,
-                            roomStatus: room.status
-                        });
-                    } else {
-                        // New guest
-                        guestMap.set(guestKey, {
-                            id: guestKey,
-                            guestName: room.guestInfo.guestName,
-                            guestEmail: room.guestInfo.guestEmail,
-                            guestPhone: room.guestInfo.guestPhone,
-                            guestId: room.guestInfo.guestId,
-                            numberOfGuests: room.guestInfo.numberOfGuests,
-                            stayCount: 1,
-                            currentRoom: room.roomNumber,
-                            currentStatus: room.status,
-                            isCurrentlyCheckedIn: room.status === 'checked-in' || room.status === 'occupied',
-                            stays: [{
-                                roomNumber: room.roomNumber,
-                                checkInDate: room.guestInfo.checkInDate,
-                                checkOutDate: room.guestInfo.checkOutDate,
-                                checkedInAt: room.guestInfo.checkedInAt,
-                                checkedInBy: room.guestInfo.checkedInBy,
-                                specialRequests: room.guestInfo.specialRequests,
-                                roomStatus: room.status
-                            }]
-                        });
-                    }
-                }
-            });
-
-            // Convert map to array and sort by most recent stay
-            const guestsData = Array.from(guestMap.values()).sort((a, b) => {
-                const dateA = a.stays[a.stays.length - 1]?.checkedInAt?.toDate() || new Date(0);
-                const dateB = b.stays[b.stays.length - 1]?.checkedInAt?.toDate() || new Date(0);
-                return dateB - dateA;
-            });
-
+            const guestsData = mergeOwnerGuestView(roomsData, ledgerGuests, staysData);
             setGuests(guestsData);
         } catch (error) {
             console.error("Error fetching guests:", error);
         } finally {
             setLoading(false);
         }
-    };
+    }, [currentUser]);
 
-    const filterGuests = () => {
+    const filterGuests = useCallback(() => {
         let filtered = guests;
 
         // Filter by search term
@@ -144,7 +154,17 @@ const GuestManagement = () => {
         }
 
         setFilteredGuests(filtered);
-    };
+    }, [guests, searchTerm, filterStatus]);
+
+    useEffect(() => {
+        if (currentUser) {
+            fetchGuests();
+        }
+    }, [currentUser, fetchGuests]);
+
+    useEffect(() => {
+        filterGuests();
+    }, [filterGuests]);
 
     const getStatusColor = (isCheckedIn) => {
         return isCheckedIn
@@ -212,12 +232,6 @@ const GuestManagement = () => {
         } catch (error) {
             console.error("Error adding test guest data:", error);
         }
-    };
-
-    const formatDate = (date) => {
-        if (!date) return 'N/A';
-        const dateObj = date.toDate ? date.toDate() : new Date(date);
-        return dateObj.toLocaleDateString();
     };
 
     const guestColumns = [
@@ -352,18 +366,28 @@ const GuestManagement = () => {
 
             {/* Guest Details Modal */}
             {showGuestDetails && selectedGuest && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-                    <div className="bg-white dark:bg-navy-800 p-6 rounded-lg shadow-lg w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+                <div className="fixed inset-0 z-50 overflow-y-auto bg-black/60 p-4">
+                    <div className="min-h-full flex items-start justify-center py-6">
+                        <div className="bg-white dark:bg-navy-800 p-6 rounded-2xl shadow-lg w-full max-w-4xl max-h-[85vh] overflow-y-auto">
                         <div className="flex items-center justify-between mb-4">
                             <h3 className="text-xl font-semibold text-navy-700 dark:text-white">
                                 Guest Details - {selectedGuest.guestName}
                             </h3>
-                            <button
-                                onClick={() => setShowGuestDetails(false)}
-                                className="text-gray-400 hover:text-gray-600"
-                            >
-                                <MdClose className="h-6 w-6" />
-                            </button>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    type="button"
+                                    onClick={printSelectedGuest}
+                                    className="rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-600"
+                                >
+                                    Print
+                                </button>
+                                <button
+                                    onClick={() => setShowGuestDetails(false)}
+                                    className="text-gray-400 hover:text-gray-600"
+                                >
+                                    <MdClose className="h-6 w-6" />
+                                </button>
+                            </div>
                         </div>
 
                         {/* Guest Information */}
@@ -398,7 +422,7 @@ const GuestManagement = () => {
                                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                                         Number of Guests
                                     </label>
-                                    <p className="text-navy-700 dark:text-white">{selectedGuest.numberOfGuests}</p>
+                                    <p className="text-navy-700 dark:text-white">{selectedGuest.numberOfGuests ?? "—"}</p>
                                 </div>
                                 <div>
                                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -472,6 +496,38 @@ const GuestManagement = () => {
                                                     </div>
                                                 </div>
                                             )}
+                                            {(stay.idProof || stay.idDocumentType) && (
+                                                <div className="md:col-span-2">
+                                                    <label className="block text-gray-600 dark:text-gray-400 mb-1">ID</label>
+                                                    <p className="text-navy-700 dark:text-white text-sm">
+                                                        {stay.idDocumentType
+                                                            ? `${idDocumentTypeLabel(stay.idDocumentType)}${stay.idProof ? ` · ${stay.idProof}` : ""}`
+                                                            : stay.idProof || "—"}
+                                                    </p>
+                                                </div>
+                                            )}
+                                            {Array.isArray(stay.idDocumentImages) && stay.idDocumentImages.length > 0 && (
+                                                <div className="md:col-span-2">
+                                                    <label className="block text-gray-600 dark:text-gray-400 mb-2">ID images</label>
+                                                    <div className="flex flex-wrap gap-2">
+                                                        {stay.idDocumentImages.map((im, ii) => (
+                                                            <a
+                                                                key={ii}
+                                                                href={im.url}
+                                                                target="_blank"
+                                                                rel="noopener noreferrer"
+                                                                className="block h-28 w-28 overflow-hidden rounded-lg border border-gray-200 dark:border-navy-600"
+                                                            >
+                                                                <img
+                                                                    src={im.url}
+                                                                    alt=""
+                                                                    className="h-full w-full object-cover"
+                                                                />
+                                                            </a>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            )}
                                         </div>
                                     </div>
                                 ))}
@@ -485,6 +541,7 @@ const GuestManagement = () => {
                             >
                                 Close
                             </button>
+                        </div>
                         </div>
                     </div>
                 </div>

@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { collection, getDocs, doc, updateDoc, query, where } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { db, functions } from "../../../firebase/config";
+import { formatCallableError } from "utils/callableError";
 import { useAuth } from "contexts/AuthContext";
 import { resolveHotelIdForOwner } from "utils/hotelOwnerUtils";
 import ComplexTable from "views/admin/default/components/ComplexTable";
@@ -18,13 +19,15 @@ import {
     MdRefresh
 } from "react-icons/md";
 
+const createStaffUserFn = httpsCallable(functions, "createStaffUser");
+const deleteStaffUserFn = httpsCallable(functions, "deleteStaffUser");
+const resetStaffPasswordFn = httpsCallable(functions, "resetStaffPassword");
+
 const StaffManagement = () => {
     const { currentUser } = useAuth();
     const [staff, setStaff] = useState([]);
     const [loading, setLoading] = useState(true);
     const [showAddModal, setShowAddModal] = useState(false);
-    const [showEditModal, setShowEditModal] = useState(false);
-    const [selectedStaff, setSelectedStaff] = useState(null);
     const [formData, setFormData] = useState({
         displayName: '',
         email: '',
@@ -39,13 +42,7 @@ const StaffManagement = () => {
     const [staffToDelete, setStaffToDelete] = useState(null);
     const [resetPasswordCredentials, setResetPasswordCredentials] = useState(null);
 
-    useEffect(() => {
-        if (currentUser) {
-            fetchStaff();
-        }
-    }, [currentUser]);
-
-    const fetchStaff = async () => {
+    const fetchStaff = useCallback(async () => {
         try {
             setLoading(true);
 
@@ -81,7 +78,13 @@ const StaffManagement = () => {
         } finally {
             setLoading(false);
         }
-    };
+    }, [currentUser]);
+
+    useEffect(() => {
+        if (currentUser) {
+            fetchStaff();
+        }
+    }, [currentUser, fetchStaff]);
 
     const generatePassword = () => {
         const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
@@ -98,20 +101,19 @@ const StaffManagement = () => {
             // Generate password if not provided
             const password = formData.password || generatePassword();
 
-            const createStaffUser = httpsCallable(functions, 'createStaffUser');
-
-            await createStaffUser({
-                email: formData.email,
+            const emailTrim = String(formData.email || "").trim().toLowerCase();
+            await createStaffUserFn({
+                email: emailTrim,
                 password: password,
-                displayName: formData.displayName,
-                phoneNumber: formData.phoneNumber || null,
+                displayName: formData.displayName.trim(),
+                phoneNumber: formData.phoneNumber?.trim() || null,
             });
 
             // Show generated credentials
             setGeneratedCredentials({
-                email: formData.email,
+                email: emailTrim,
                 password: password,
-                displayName: formData.displayName
+                displayName: formData.displayName.trim()
             });
 
             setShowAddModal(false);
@@ -120,7 +122,7 @@ const StaffManagement = () => {
             
         } catch (error) {
             console.error("Error adding staff:", error);
-            alert("Error creating staff account: " + error.message);
+            alert(formatCallableError(error, "Error creating staff account (createStaffUser)."));
         }
     };
 
@@ -148,9 +150,7 @@ const StaffManagement = () => {
             if (!staffToDelete) return;
 
             // Call the Firebase Function to delete staff user
-            const deleteStaffUser = httpsCallable(functions, 'deleteStaffUser');
-            
-            await deleteStaffUser({
+            await deleteStaffUserFn({
                 staffUid: staffToDelete.id
             });
 
@@ -163,7 +163,7 @@ const StaffManagement = () => {
             alert("Staff member deleted successfully!");
         } catch (error) {
             console.error("Error deleting staff:", error);
-            alert("Error deleting staff member: " + error.message);
+            alert(formatCallableError(error, "Error deleting staff (deleteStaffUser)."));
         }
     };
 
@@ -171,9 +171,7 @@ const StaffManagement = () => {
         try {
             if (!staffToDelete) return;
 
-            const resetStaffPassword = httpsCallable(functions, 'resetStaffPassword');
-
-            const result = await resetStaffPassword({
+            const result = await resetStaffPasswordFn({
                 staffUid: staffToDelete.id,
             });
 
@@ -189,7 +187,7 @@ const StaffManagement = () => {
 
         } catch (error) {
             console.error("Error resetting password:", error);
-            alert("Error resetting password: " + error.message);
+            alert(formatCallableError(error, "Error resetting password (resetStaffPassword)."));
         }
     };
 

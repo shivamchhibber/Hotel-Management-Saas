@@ -5,6 +5,7 @@ import Sidebar from "components/sidebar";
 import Footer from "components/footer/Footer";
 import ProtectedRoute from "components/ProtectedRoute";
 import SuperAdminRoutes from "routes/super-admin";
+import { BRAND } from "theme/brand";
 
 export default function SuperAdminLayout(props) {
     const { ...rest } = props;
@@ -75,12 +76,12 @@ export default function SuperAdminLayout(props) {
                         <div className="h-full">
                             <Navbar
                                 onOpenSidenav={() => setOpen(true)}
-                                logoText={"Hotel Management"}
+                                logoText={BRAND.name}
                                 brandText={currentRoute}
                                 secondary={getActiveNavbar(SuperAdminRoutes)}
                                 {...rest}
                             />
-                            <div className="pt-5s mx-auto mb-auto h-full min-h-[84vh] p-2 md:pr-2">
+                            <div className="pt-5 mx-auto mb-auto h-full min-h-[84vh] p-2 md:pr-2">
                                 <Routes>
                                     {getRoutes(SuperAdminRoutes)}
                                     <Route

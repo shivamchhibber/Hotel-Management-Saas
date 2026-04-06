@@ -7,13 +7,7 @@ import SignIn from "views/auth/SignIn";
 import SignUp from "views/auth/SignUp";
 
 // Icon Imports
-import {
-  MdHome,
-  MdOutlineShoppingCart,
-  MdBarChart,
-  MdPerson,
-  MdLock,
-} from "react-icons/md";
+import { MdPerson, MdLock } from "react-icons/md";
 
 const routes = [
   // No admin demo routes
