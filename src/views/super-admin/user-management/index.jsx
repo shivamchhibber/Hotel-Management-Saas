@@ -1,6 +1,8 @@
-import React, { useState, useEffect } from "react";
-import { collection, getDocs, doc, updateDoc } from "firebase/firestore";
-import { db } from "../../../firebase/config";
+import React, { useState, useEffect, useCallback } from "react";
+import { getDoc, doc, updateDoc } from "firebase/firestore";
+import { httpsCallable } from "firebase/functions";
+import { db, functions } from "../../../firebase/config";
+import { useAuth } from "contexts/AuthContext";
 import ComplexTable from "views/admin/default/components/ComplexTable";
 import {
     MdEdit,
@@ -8,10 +10,12 @@ import {
     MdCancel,
 } from "react-icons/md";
 import { normalizeRole, formatRoleLabel } from "utils/roleUtils";
+import { formatCallableError } from "utils/callableError";
 
 function createdAtMs(data) {
     const c = data?.createdAt;
-    if (!c) return 0;
+    if (c == null) return 0;
+    if (typeof c === "number") return c;
     if (typeof c.toMillis === "function") return c.toMillis();
     if (typeof c.toDate === "function") return c.toDate().getTime();
     if (typeof c.seconds === "number") return c.seconds * 1000;
@@ -19,30 +23,67 @@ function createdAtMs(data) {
     return 0;
 }
 
+function formatCreatedAtDisplay(value) {
+    if (value == null || value === "") return "";
+    if (typeof value === "number") return new Date(value).toLocaleString();
+    if (typeof value.toDate === "function") return value.toDate().toLocaleString();
+    if (typeof value.seconds === "number") return new Date(value.seconds * 1000).toLocaleString();
+    return "";
+}
+
+const superAdminListUsers = httpsCallable(functions, "superAdminListUsers");
+
 const UserManagement = () => {
+    const { currentUser } = useAuth();
     const [users, setUsers] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [fetchError, setFetchError] = useState("");
     const [selectedUser, setSelectedUser] = useState(null);
     const [showModal, setShowModal] = useState(false);
 
-    useEffect(() => {
-        fetchUsers();
-    }, []);
-
-    const fetchUsers = async () => {
+    const fetchUsers = useCallback(async () => {
         try {
             setLoading(true);
-            const usersSnapshot = await getDocs(collection(db, "users"));
-            const usersData = usersSnapshot.docs
-                .map((d) => ({ id: d.id, ...d.data() }))
-                .sort((a, b) => createdAtMs(b) - createdAtMs(a));
+            setFetchError("");
+            const result = await superAdminListUsers();
+            const list = Array.isArray(result.data?.users) ? result.data.users : [];
+            const usersData = list.sort((a, b) => createdAtMs(b) - createdAtMs(a));
             setUsers(usersData);
         } catch (error) {
             console.error("Error fetching users:", error);
+            let base = formatCallableError(error, "Could not load users (superAdminListUsers).");
+            base +=
+                " Super admins need users/{yourAuthUid} with role \"super_admin\".";
+
+            if (currentUser?.uid) {
+                try {
+                    const selfSnap = await getDoc(doc(db, "users", currentUser.uid));
+                    if (!selfSnap.exists()) {
+                        base += `\n\nDiagnosis: There is no document at users/${currentUser.uid}. In Firebase Console → Firestore, create a document with that exact ID and set role to "super_admin" (plus email, uid, isActive as needed).`;
+                    } else {
+                        const rawRole = selfSnap.data()?.role;
+                        const norm = normalizeRole(rawRole);
+                        if (norm !== "super_admin") {
+                            base += `\n\nDiagnosis: users/${currentUser.uid} exists but role is ${JSON.stringify(rawRole)}. Rules expect the string "super_admin" (underscore, lowercase). Update the field and refresh.`;
+                        } else {
+                            base += `\n\nDiagnosis: Your profile already has role "super_admin". If you still see permission-denied, deploy functions (superAdminListUsers) and confirm REACT_APP_FIREBASE_PROJECT_ID / FUNCTIONS_REGION match this project.`;
+                        }
+                    }
+                } catch (inner) {
+                    base += `\n\nCould not read your own profile doc: ${inner?.message || inner}`;
+                }
+            }
+
+            setFetchError(base);
+            setUsers([]);
         } finally {
             setLoading(false);
         }
-    };
+    }, [currentUser?.uid]);
+
+    useEffect(() => {
+        fetchUsers();
+    }, [fetchUsers]);
 
     const toggleUserStatus = async (userId, currentStatus) => {
         try {
@@ -91,9 +132,7 @@ const UserManagement = () => {
     const formatData = (users) => {
         return users.map(user => ({
             ...user,
-            createdAtFormatted: user.createdAt && typeof user.createdAt.toDate === 'function'
-                ? user.createdAt.toDate().toLocaleString()
-                : (user.createdAt ? new Date(user.createdAt).toLocaleString() : ''),
+            createdAtFormatted: formatCreatedAtDisplay(user.createdAt),
             role: (
                 <span className={`px-2 py-1 rounded-full text-xs font-medium ${getRoleColor(user.role)}`}>
                     {formatRoleLabel(user.role)}
@@ -146,11 +185,44 @@ const UserManagement = () => {
 
     return (
         <div>
-            <div className="mt-6 mb-6 flex items-center justify-between">
+            <div className="mt-6 mb-6 flex flex-wrap items-center justify-between gap-3">
                 <h2 className="text-2xl font-bold text-navy-700 dark:text-white">
                     User Management
                 </h2>
+                <button
+                    type="button"
+                    onClick={() => fetchUsers()}
+                    className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-navy-700 hover:bg-gray-50 dark:border-white/20 dark:bg-navy-800 dark:text-white dark:hover:bg-navy-700"
+                >
+                    Refresh list
+                </button>
             </div>
+
+            {fetchError ? (
+                <div className="mb-5 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-900 dark:border-red-900 dark:bg-red-950/40 dark:text-red-100">
+                    <p className="font-semibold">Could not load users</p>
+                    <p className="mt-2 whitespace-pre-wrap">{fetchError}</p>
+                    {currentUser?.uid ? (
+                        <p className="mt-2 text-xs opacity-90">
+                            Your Auth UID (use as Firestore document ID for your profile):{" "}
+                            <code className="rounded bg-white/70 px-1 dark:bg-black/40">{currentUser.uid}</code>
+                        </p>
+                    ) : null}
+                    <button
+                        type="button"
+                        onClick={() => fetchUsers()}
+                        className="mt-3 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
+                    >
+                        Retry
+                    </button>
+                </div>
+            ) : null}
+
+            {!fetchError && users.length === 0 ? (
+                <p className="mb-4 text-sm text-gray-600 dark:text-gray-400">
+                    No user documents in Firestore yet, or none are visible with your current account rules.
+                </p>
+            ) : null}
 
             <ComplexTable
                 columnsData={userColumns}
@@ -216,7 +288,7 @@ const UserManagement = () => {
                             <div>
                                 <label className="text-sm font-medium text-gray-600">Created At</label>
                                 <p className="text-navy-700 dark:text-white">
-                                    {selectedUser.createdAt ? new Date(selectedUser.createdAt.seconds * 1000).toLocaleDateString() : 'N/A'}
+                                    {formatCreatedAtDisplay(selectedUser.createdAt) || 'N/A'}
                                 </p>
                             </div>
                         </div>

@@ -1,12 +1,9 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { collection, getDocs, query, where, orderBy } from "firebase/firestore";
 import { db } from "../../../firebase/config";
 import { useAuth } from "contexts/AuthContext";
 import { resolveHotelIdForOwner } from "utils/hotelOwnerUtils";
-import WeeklyRevenue from "views/admin/default/components/WeeklyRevenue";
-import TotalSpent from "views/admin/default/components/TotalSpent";
-import PieChartCard from "views/admin/default/components/PieChartCard";
-import DailyTraffic from "views/admin/default/components/DailyTraffic";
+import { ownerListStaysFn } from "utils/ownerCallables";
 import {
     MdTrendingUp,
     MdAttachMoney,
@@ -23,19 +20,12 @@ const Reports = () => {
         averageStayDuration: 0,
         occupancyRate: 0
     });
-    const [revenueData, setRevenueData] = useState([]);
-    const [guestData, setGuestData] = useState([]);
     const [loading, setLoading] = useState(true);
     const [missingHotel, setMissingHotel] = useState(false);
     const [dateRange, setDateRange] = useState("30"); // days
+    const [dailyRevenue, setDailyRevenue] = useState([]); // [{dateLabel, total}]
 
-    useEffect(() => {
-        if (currentUser) {
-            fetchReportsData();
-        }
-    }, [currentUser, dateRange]);
-
-    const fetchReportsData = async () => {
+    const fetchReportsData = useCallback(async () => {
         try {
             setLoading(true);
 
@@ -49,8 +39,6 @@ const Reports = () => {
                     averageStayDuration: 0,
                     occupancyRate: 0,
                 });
-                setRevenueData([]);
-                setGuestData([]);
                 return;
             }
             setMissingHotel(false);
@@ -60,109 +48,76 @@ const Reports = () => {
             const startDate = new Date();
             startDate.setDate(startDate.getDate() - parseInt(dateRange));
 
-            // Fetch check-ins for revenue calculation
-            const checkInsQuery = query(
-                collection(db, "checkins"),
-                where("hotelId", "==", hotelId),
-                where("checkInDate", ">=", startDate),
-                where("checkInDate", "<=", endDate),
-                orderBy("checkInDate", "asc")
-            );
-            const checkInsSnapshot = await getDocs(checkInsQuery);
-            const checkIns = checkInsSnapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data()
-            }));
+            let stays = [];
+            try {
+                const { data } = await ownerListStaysFn({});
+                stays = Array.isArray(data?.stays) ? data.stays : [];
+            } catch (callableErr) {
+                console.warn("ownerListStays failed; falling back to Firestore query:", callableErr);
+                const staysQuery = query(
+                    collection(db, "stays"),
+                    where("hotelId", "==", hotelId),
+                    orderBy("checkInAt", "asc"),
+                );
+                const staysSnap = await getDocs(staysQuery);
+                stays = staysSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+            }
 
-            // Fetch check-outs for guest data
-            const checkOutsQuery = query(
-                collection(db, "checkouts"),
-                where("hotelId", "==", hotelId),
-                where("checkOutDate", ">=", startDate),
-                where("checkOutDate", "<=", endDate),
-                orderBy("checkOutDate", "asc")
-            );
-            const checkOutsSnapshot = await getDocs(checkOutsQuery);
-            const checkOuts = checkOutsSnapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data()
-            }));
+            const inRange = stays.filter((s) => {
+                const ci = s.checkInAt?.toDate ? s.checkInAt.toDate() : new Date(s.checkInAt);
+                return ci >= startDate && ci <= endDate;
+            });
 
-            // Calculate metrics
-            const totalRevenue = checkIns.reduce((sum, checkin) => sum + (checkin.amount || 0), 0);
-            const totalGuests = checkIns.length;
+            const completed = inRange.filter((s) => !!s.checkOutAt);
+            const totalRevenue = completed.reduce((sum, s) => sum + Number(s.totalAmount || 0), 0);
+            const totalGuests = inRange.length;
 
-            // Calculate average stay duration
-            const stayDurations = checkOuts.map(checkout => {
-                const checkIn = checkIns.find(ci => ci.guestId === checkout.guestId);
-                if (checkIn) {
-                    const checkInDate = checkIn.checkInDate?.toDate();
-                    const checkOutDate = checkout.checkOutDate?.toDate();
-                    if (checkInDate && checkOutDate) {
-                        return Math.ceil((checkOutDate - checkInDate) / (1000 * 60 * 60 * 24));
-                    }
-                }
-                return 0;
-            }).filter(duration => duration > 0);
+            const avgNights =
+                completed.length > 0
+                    ? Math.round(
+                        completed.reduce((sum, s) => sum + Number(s.nights || 0), 0) / completed.length,
+                    )
+                    : 0;
 
-            const averageStayDuration = stayDurations.length > 0
-                ? Math.round(stayDurations.reduce((sum, duration) => sum + duration, 0) / stayDurations.length)
-                : 0;
-
-            // Calculate occupancy rate (assuming 50 rooms max)
             const maxRooms = 50;
             const occupancyRate = Math.round((totalGuests / (maxRooms * parseInt(dateRange))) * 100);
 
             setReports({
                 totalRevenue,
                 totalGuests,
-                averageStayDuration,
+                averageStayDuration: avgNights,
                 occupancyRate
             });
 
-            // Prepare chart data
-            prepareChartData(checkIns, checkOuts);
+            // Build daily revenue series from completed stays (by checkout date).
+            const byDay = new Map();
+            completed.forEach((s) => {
+                const d = s.checkOutAt?.toDate ? s.checkOutAt.toDate() : new Date(s.checkOutAt);
+                if (!(d instanceof Date) || Number.isNaN(d.getTime())) return;
+                const key = d.toISOString().slice(0, 10);
+                const prev = byDay.get(key) || 0;
+                byDay.set(key, prev + Number(s.totalAmount || 0));
+            });
+            const series = Array.from(byDay.entries())
+                .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+                .map(([iso, total]) => ({
+                    iso,
+                    dateLabel: new Date(iso).toLocaleDateString("en-IN", { day: "2-digit", month: "short" }),
+                    total,
+                }));
+            setDailyRevenue(series);
         } catch (error) {
             console.error("Error fetching reports data:", error);
         } finally {
             setLoading(false);
         }
-    };
+    }, [currentUser, dateRange]);
 
-    const prepareChartData = (checkIns, checkOuts) => {
-        // Revenue data by day
-        const revenueByDay = {};
-        checkIns.forEach(checkin => {
-            const date = checkin.checkInDate?.toDate();
-            if (date) {
-                const dateStr = date.toISOString().split('T')[0];
-                revenueByDay[dateStr] = (revenueByDay[dateStr] || 0) + (checkin.amount || 0);
-            }
-        });
-
-        const revenueData = Object.entries(revenueByDay).map(([date, amount]) => ({
-            date,
-            amount
-        }));
-
-        // Guest data by day
-        const guestsByDay = {};
-        checkIns.forEach(checkin => {
-            const date = checkin.checkInDate?.toDate();
-            if (date) {
-                const dateStr = date.toISOString().split('T')[0];
-                guestsByDay[dateStr] = (guestsByDay[dateStr] || 0) + 1;
-            }
-        });
-
-        const guestData = Object.entries(guestsByDay).map(([date, count]) => ({
-            date,
-            count
-        }));
-
-        setRevenueData(revenueData);
-        setGuestData(guestData);
-    };
+    useEffect(() => {
+        if (currentUser) {
+            fetchReportsData();
+        }
+    }, [currentUser, fetchReportsData]);
 
     const formatCurrency = (amount) => {
         return new Intl.NumberFormat('en-IN', {
@@ -294,14 +249,39 @@ const Reports = () => {
             </div>
 
             {/* Charts */}
-            <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-                <TotalSpent />
-                <WeeklyRevenue />
-            </div>
+            <div className="al-card">
+                <div className="flex items-center justify-between">
+                    <div>
+                        <p className="text-sm font-medium text-gray-600 dark:text-gray-300">Revenue trend</p>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">Based on check-outs in selected range</p>
+                    </div>
+                </div>
 
-            <div className="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-2">
-                <DailyTraffic />
-                <PieChartCard />
+                {dailyRevenue.length === 0 ? (
+                    <div className="mt-4 rounded-2xl bg-gray-50 p-4 text-sm text-gray-600 dark:bg-navy-900 dark:text-gray-300">
+                        No completed stays in this range yet.
+                    </div>
+                ) : (
+                    <div className="mt-4 grid grid-cols-1 gap-3">
+                        {(() => {
+                            const max = Math.max(...dailyRevenue.map((x) => x.total || 0), 1);
+                            return dailyRevenue.slice(-14).map((d) => (
+                                <div key={d.iso} className="flex items-center gap-3">
+                                    <div className="w-12 text-xs text-gray-500 dark:text-gray-400">{d.dateLabel}</div>
+                                    <div className="h-3 flex-1 overflow-hidden rounded-full bg-gray-100 dark:bg-navy-900">
+                                        <div
+                                            className="h-full rounded-full bg-brand-500"
+                                            style={{ width: `${Math.round((d.total / max) * 100)}%` }}
+                                        />
+                                    </div>
+                                    <div className="w-24 text-right text-xs font-semibold text-navy-700 dark:text-white">
+                                        {formatCurrency(d.total)}
+                                    </div>
+                                </div>
+                            ));
+                        })()}
+                    </div>
+                )}
             </div>
         </div>
     );

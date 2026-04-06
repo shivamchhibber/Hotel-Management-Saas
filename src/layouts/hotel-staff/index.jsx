@@ -5,6 +5,7 @@ import Sidebar from "components/sidebar";
 import Footer from "components/footer/Footer";
 import ProtectedRoute from "components/ProtectedRoute";
 import HotelStaffRoutes from "routes/hotel-staff";
+import { BRAND } from "theme/brand";
 
 export default function HotelStaffLayout(props) {
     const { ...rest } = props;
@@ -75,12 +76,12 @@ export default function HotelStaffLayout(props) {
                         <div className="h-full">
                             <Navbar
                                 onOpenSidenav={() => setOpen(true)}
-                                logoText={"Hotel Management"}
+                                logoText={BRAND.name}
                                 brandText={currentRoute}
                                 secondary={getActiveNavbar(HotelStaffRoutes)}
                                 {...rest}
                             />
-                            <div className="pt-5s mx-auto mb-auto h-full min-h-[84vh] p-2 md:pr-2">
+                            <div className="pt-5 mx-auto mb-auto h-full min-h-[84vh] p-2 md:pr-2">
                                 <Routes>
                                     {getRoutes(HotelStaffRoutes)}
                                     <Route

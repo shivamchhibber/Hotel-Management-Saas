@@ -34,23 +34,111 @@ service cloud.firestore {
       return isAuthenticated() && getUserRole() == 'guest';
     }
 
+    /** Hotel doc ownerId is source of truth. Do not require users.{uid}.role here — mismatched role blocks room CRUD. */
     function ownsHotel(hotelId) {
-      return isHotelOwner() &&
+      return isAuthenticated() &&
+        hotelId != null &&
         exists(/databases/$(database)/documents/hotels/$(hotelId)) &&
+        get(/databases/$(database)/documents/hotels/$(hotelId)).data.keys().hasAll(['ownerId']) &&
         get(/databases/$(database)/documents/hotels/$(hotelId)).data.ownerId == request.auth.uid;
+    }
+
+    /**
+     * users.{uid}.hotelId is often a string id; room docs may store the same id as a DocumentReference.
+     * Plain == fails across types and blocks staff room updates (check-out) and some reads.
+     */
+    function sameHotelIdField(a, b) {
+      return a != null && b != null && (
+        a == b ||
+        (exists(/databases/$(database)/documents/hotels/$(a)) &&
+          b == /databases/$(database)/documents/hotels/$(a)) ||
+        (exists(/databases/$(database)/documents/hotels/$(b)) &&
+          a == /databases/$(database)/documents/hotels/$(b))
+      );
     }
 
     function worksAtHotel(hotelId) {
       return (isHotelOwner() || isHotelStaff()) &&
         callerHotelId() != null &&
-        callerHotelId() == hotelId;
+        hotelId != null &&
+        sameHotelIdField(callerHotelId(), hotelId);
+    }
+
+    /** Avoid null == null matching docs without hotelId (breaks owner/staff scoping and user list queries). */
+    function resourceHotelIdMatchesCaller() {
+      return callerHotelId() != null &&
+        resource.data.keys().hasAll(['hotelId']) &&
+        resource.data.hotelId != null &&
+        sameHotelIdField(resource.data.hotelId, callerHotelId());
+    }
+
+    function requestHotelIdMatchesCaller() {
+      return callerHotelId() != null &&
+        request.resource.data.keys().hasAll(['hotelId']) &&
+        request.resource.data.hotelId != null &&
+        sameHotelIdField(request.resource.data.hotelId, callerHotelId());
+    }
+
+    /** True when resource doc's hotelId points at a hotel owned by the signed-in user. */
+    function resourceHotelOwnedByAuthUid() {
+      return resource.data.keys().hasAll(['hotelId']) &&
+        resource.data.hotelId != null &&
+        exists(/databases/$(database)/documents/hotels/$(resource.data.hotelId)) &&
+        get(/databases/$(database)/documents/hotels/$(resource.data.hotelId)).data.ownerId == request.auth.uid;
+    }
+
+    /** Create/write: hotel.ownerId == auth (owner) without needing users.hotelId / role sync. */
+    function requestHotelOwnedByAuthUid() {
+      return request.resource.data.keys().hasAll(['hotelId']) &&
+        request.resource.data.hotelId != null &&
+        exists(/databases/$(database)/documents/hotels/$(request.resource.data.hotelId)) &&
+        get(/databases/$(database)/documents/hotels/$(request.resource.data.hotelId)).data.ownerId == request.auth.uid;
+    }
+
+    /**
+     * Same hotelId as users/{auth.uid}.hotelId — Firestore can certify list queries (where hotelId == X).
+     * No role check: guests should not have hotelId set; only owner/staff profiles get it from callables.
+     */
+    function resourceHotelIdMatchesUserProfile() {
+      return resource.data.keys().hasAll(['hotelId']) &&
+        resource.data.hotelId != null &&
+        callerUserDoc().exists &&
+        callerUserDoc().data.hotelId != null &&
+        sameHotelIdField(resource.data.hotelId, callerUserDoc().data.hotelId);
+    }
+
+    function requestHotelIdMatchesUserProfile() {
+      return request.resource.data.keys().hasAll(['hotelId']) &&
+        request.resource.data.hotelId != null &&
+        callerUserDoc().exists &&
+        callerUserDoc().data.hotelId != null &&
+        sameHotelIdField(request.resource.data.hotelId, callerUserDoc().data.hotelId);
+    }
+
+    function ownerOrStaffHotelScopedRead() {
+      return resourceHotelIdMatchesUserProfile() ||
+        resourceHotelOwnedByAuthUid() ||
+        ((isHotelOwner() || isHotelStaff()) && resourceHotelIdMatchesCaller());
+    }
+
+    function ownerOrStaffCanCreateForHotel() {
+      return requestHotelIdMatchesUserProfile() ||
+        requestHotelOwnedByAuthUid() ||
+        ((isHotelOwner() || isHotelStaff()) && requestHotelIdMatchesCaller());
+    }
+
+    /** Staff may only change operational fields on rooms (not price, type, delete, etc.). */
+    function staffRoomUpdateKeysAllowed() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+        .hasOnly(['status', 'updatedAt', 'updatedBy', 'guestInfo', 'checkInDate', 'checkOutDate', 'activeStayId']);
     }
 
     match /users/{userId} {
       allow read: if isAuthenticated() && (
         request.auth.uid == userId ||
         isSuperAdmin() ||
-        (isHotelOwner() && resource.data.hotelId == callerHotelId())
+        resourceHotelOwnedByAuthUid() ||
+        (isHotelOwner() && resourceHotelIdMatchesCaller())
       );
 
       allow create: if isAuthenticated() &&
@@ -64,7 +152,14 @@ service cloud.firestore {
           !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'hotelId'])) ||
         isSuperAdmin() ||
         (isHotelOwner() &&
+          resource.data.keys().hasAll(['hotelId']) &&
+          resource.data.hotelId != null &&
           resource.data.hotelId == callerHotelId() &&
+          resource.data.role == 'hotel_staff' &&
+          request.resource.data.role == 'hotel_staff' &&
+          request.resource.data.hotelId == resource.data.hotelId) ||
+        (ownsHotel(resource.data.hotelId) &&
+          resource.data.keys().hasAll(['hotelId']) &&
           resource.data.role == 'hotel_staff' &&
           request.resource.data.role == 'hotel_staff' &&
           request.resource.data.hotelId == resource.data.hotelId)
@@ -74,8 +169,14 @@ service cloud.firestore {
     }
 
     match /hotels/{hotelId} {
+      // Staff/owner must read hotels/{hotelId} when rules call get(hotel); profile hotelId must allow that
+      // even if users.role is wrong (worksAtHotel would fail and break get() in other rules).
       allow read: if isAuthenticated() && (
         isSuperAdmin() ||
+        (resource.data.keys().hasAll(['ownerId']) && resource.data.ownerId == request.auth.uid) ||
+        (callerUserDoc().exists &&
+          callerUserDoc().data.hotelId != null &&
+          callerUserDoc().data.hotelId == hotelId) ||
         ownsHotel(hotelId) ||
         worksAtHotel(hotelId)
       );
@@ -93,21 +194,18 @@ service cloud.firestore {
     match /guests/{guestId} {
       allow read: if isAuthenticated() && (
         (isGuest() && request.auth.uid == guestId) ||
-        (isHotelOwner() && resource.data.hotelId == callerHotelId()) ||
-        (isHotelStaff() && resource.data.hotelId == callerHotelId()) ||
+        ownerOrStaffHotelScopedRead() ||
         isSuperAdmin()
       );
 
       allow create: if isAuthenticated() && (
-        (isHotelOwner() && request.resource.data.hotelId == callerHotelId()) ||
-        (isHotelStaff() && request.resource.data.hotelId == callerHotelId()) ||
+        ownerOrStaffCanCreateForHotel() ||
         isSuperAdmin()
       );
 
       allow update: if isAuthenticated() && (
         (isGuest() && request.auth.uid == guestId) ||
-        (isHotelOwner() && resource.data.hotelId == callerHotelId()) ||
-        (isHotelStaff() && resource.data.hotelId == callerHotelId()) ||
+        ownerOrStaffHotelScopedRead() ||
         isSuperAdmin()
       );
 
@@ -117,20 +215,17 @@ service cloud.firestore {
     match /checkins/{checkinId} {
       allow read: if isAuthenticated() && (
         (isGuest() && resource.data.guestId == request.auth.uid) ||
-        (isHotelOwner() && resource.data.hotelId == callerHotelId()) ||
-        (isHotelStaff() && resource.data.hotelId == callerHotelId()) ||
+        ownerOrStaffHotelScopedRead() ||
         isSuperAdmin()
       );
 
       allow create: if isAuthenticated() && (
-        (isHotelOwner() && request.resource.data.hotelId == callerHotelId()) ||
-        (isHotelStaff() && request.resource.data.hotelId == callerHotelId()) ||
+        ownerOrStaffCanCreateForHotel() ||
         isSuperAdmin()
       );
 
       allow update, delete: if isAuthenticated() && (
-        (isHotelOwner() && resource.data.hotelId == callerHotelId()) ||
-        (isHotelStaff() && resource.data.hotelId == callerHotelId()) ||
+        ownerOrStaffHotelScopedRead() ||
         isSuperAdmin()
       );
     }
@@ -138,34 +233,47 @@ service cloud.firestore {
     match /checkouts/{checkoutId} {
       allow read: if isAuthenticated() && (
         (isGuest() && resource.data.guestId == request.auth.uid) ||
-        (isHotelOwner() && resource.data.hotelId == callerHotelId()) ||
-        (isHotelStaff() && resource.data.hotelId == callerHotelId()) ||
+        ownerOrStaffHotelScopedRead() ||
         isSuperAdmin()
       );
 
       allow create: if isAuthenticated() && (
-        (isHotelOwner() && request.resource.data.hotelId == callerHotelId()) ||
-        (isHotelStaff() && request.resource.data.hotelId == callerHotelId()) ||
+        ownerOrStaffCanCreateForHotel() ||
         isSuperAdmin()
       );
 
       allow update, delete: if isAuthenticated() && (
-        (isHotelOwner() && resource.data.hotelId == callerHotelId()) ||
-        (isHotelStaff() && resource.data.hotelId == callerHotelId()) ||
+        ownerOrStaffHotelScopedRead() ||
+        isSuperAdmin()
+      );
+    }
+
+    match /stays/{stayId} {
+      allow read: if isAuthenticated() && (
+        (isGuest() && resource.data.guestUid == request.auth.uid) ||
+        ownerOrStaffHotelScopedRead() ||
+        isSuperAdmin()
+      );
+
+      allow create: if isAuthenticated() && (
+        ownerOrStaffCanCreateForHotel() ||
+        isSuperAdmin()
+      );
+
+      allow update, delete: if isAuthenticated() && (
+        ownerOrStaffHotelScopedRead() ||
         isSuperAdmin()
       );
     }
 
     match /activity_logs/{logId} {
       allow read: if isAuthenticated() && (
-        (isHotelOwner() && resource.data.hotelId == callerHotelId()) ||
-        (isHotelStaff() && resource.data.hotelId == callerHotelId()) ||
+        ownerOrStaffHotelScopedRead() ||
         isSuperAdmin()
       );
 
       allow create: if isAuthenticated() && (
-        (isHotelOwner() && request.resource.data.hotelId == callerHotelId()) ||
-        (isHotelStaff() && request.resource.data.hotelId == callerHotelId()) ||
+        ownerOrStaffCanCreateForHotel() ||
         isSuperAdmin()
       );
 
@@ -173,42 +281,47 @@ service cloud.firestore {
     }
 
     match /rooms/{roomId} {
-      allow read: if isAuthenticated() && (
-        isSuperAdmin() ||
-        worksAtHotel(resource.data.hotelId)
-      );
+      // Separate allow read lines: list queries certify the simple profile match without evaluating get(hotel).
+      allow read: if isAuthenticated() && isSuperAdmin();
+      allow read: if isAuthenticated() && resourceHotelIdMatchesUserProfile();
+      allow read: if isAuthenticated() && resourceHotelOwnedByAuthUid();
 
       allow create: if isAuthenticated() && (
         isSuperAdmin() ||
-        (isHotelOwner() && ownsHotel(request.resource.data.hotelId))
+        (request.resource.data.keys().hasAll(['hotelId']) &&
+          ownsHotel(request.resource.data.hotelId))
       );
 
       allow update: if isAuthenticated() && (
         isSuperAdmin() ||
-        (isHotelOwner() && ownsHotel(resource.data.hotelId)) ||
-        (isHotelStaff() && worksAtHotel(resource.data.hotelId))
+        (ownsHotel(resource.data.hotelId) &&
+          request.resource.data.hotelId == resource.data.hotelId) ||
+        (isHotelStaff() && worksAtHotel(resource.data.hotelId) &&
+          sameHotelIdField(request.resource.data.hotelId, resource.data.hotelId) &&
+          staffRoomUpdateKeysAllowed())
       );
 
       allow delete: if isAuthenticated() && (
         isSuperAdmin() ||
-        (isHotelOwner() && ownsHotel(resource.data.hotelId))
+        ownsHotel(resource.data.hotelId)
       );
     }
 
     match /staff_actions/{actionId} {
-      allow read: if isAuthenticated() && (
-        isSuperAdmin() ||
-        worksAtHotel(resource.data.hotelId)
-      );
+      allow read: if isAuthenticated() && isSuperAdmin();
+      allow read: if isAuthenticated() && resourceHotelIdMatchesUserProfile();
+      allow read: if isAuthenticated() && resourceHotelOwnedByAuthUid();
 
       allow create: if isAuthenticated() && (
         isSuperAdmin() ||
-        worksAtHotel(request.resource.data.hotelId)
+        worksAtHotel(request.resource.data.hotelId) ||
+        (request.resource.data.keys().hasAll(['hotelId']) &&
+          ownsHotel(request.resource.data.hotelId))
       );
 
       allow update, delete: if isAuthenticated() && (
         isSuperAdmin() ||
-        (isHotelOwner() && ownsHotel(resource.data.hotelId))
+        ownsHotel(resource.data.hotelId)
       );
     }
   }

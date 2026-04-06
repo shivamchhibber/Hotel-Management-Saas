@@ -2,6 +2,7 @@ import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import { getFunctions } from 'firebase/functions';
+import { getStorage } from 'firebase/storage';
 
 const firebaseConfig = {
     apiKey: process.env.REACT_APP_FIREBASE_API_KEY || 'AIzaSyCmbBgb9jd97dZykUbIDzD4Oo6FkXh00xA',
@@ -15,10 +16,14 @@ const firebaseConfig = {
 
 const FUNCTIONS_REGION = process.env.REACT_APP_FIREBASE_FUNCTIONS_REGION || 'us-central1';
 
+/** Match server timeout for cold starts; default SDK timeout is 70s. */
+export const HTTPS_CALLABLE_LONG_TIMEOUT_MS = 120000;
+
 const app = initializeApp(firebaseConfig);
 
 export const auth = getAuth(app);
 export const db = getFirestore(app);
+export const storage = getStorage(app);
 export const functions = getFunctions(app, FUNCTIONS_REGION);
 
 if (process.env.NODE_ENV === 'development') {

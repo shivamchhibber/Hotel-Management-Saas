@@ -10,7 +10,6 @@ import {
     MdHome,
     MdBusiness,
     MdPeople,
-    MdSettings,
 } from "react-icons/md";
 
 const superAdminRoutes = [

@@ -1,15 +1,19 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { doc, getDoc, updateDoc } from "firebase/firestore";
 import { db } from "../../../firebase/config";
 import { useAuth } from "contexts/AuthContext";
 import InputField from "components/fields/InputField";
+import { ID_DOCUMENT_TYPES, idDocumentTypeLabel } from "utils/idDocuments";
+import { uploadGuestProfileIdImage } from "utils/storageUpload";
 import {
     MdPerson,
     MdEmail,
     MdPhone,
     MdEdit,
     MdSave,
-    MdCancel
+    MdCancel,
+    MdCameraAlt,
+    MdDelete,
 } from "react-icons/md";
 
 const Profile = () => {
@@ -23,14 +27,12 @@ const Profile = () => {
     const [loading, setLoading] = useState(true);
     const [editing, setEditing] = useState(false);
     const [saving, setSaving] = useState(false);
+    const [idDocuments, setIdDocuments] = useState([]);
+    const [newIdType, setNewIdType] = useState("aadhaar");
+    const [idUploadBusy, setIdUploadBusy] = useState(false);
+    const idFileRef = useRef(null);
 
-    useEffect(() => {
-        if (currentUser) {
-            fetchProfile();
-        }
-    }, [currentUser]);
-
-    const fetchProfile = async () => {
+    const fetchProfile = useCallback(async () => {
         try {
             setLoading(true);
             const userDoc = await getDoc(doc(db, "users", currentUser.uid));
@@ -42,21 +44,28 @@ const Profile = () => {
                     phoneNumber: userData.phoneNumber || currentUser.phoneNumber || '',
                     photoURL: userData.photoURL || currentUser.photoURL || ''
                 });
+                setIdDocuments(Array.isArray(userData.idDocuments) ? userData.idDocuments : []);
             }
         } catch (error) {
             console.error("Error fetching profile:", error);
         } finally {
             setLoading(false);
         }
-    };
+    }, [currentUser]);
+
+    useEffect(() => {
+        if (currentUser) {
+            fetchProfile();
+        }
+    }, [currentUser, fetchProfile]);
 
     const handleSave = async () => {
         try {
             setSaving(true);
             await updateDoc(doc(db, "users", currentUser.uid), {
                 displayName: profile.displayName,
-                email: profile.email,
-                phoneNumber: profile.phoneNumber,
+                email: String(profile.email || "").trim().toLowerCase(),
+                phoneNumber: String(profile.phoneNumber || "").trim(),
                 photoURL: profile.photoURL,
                 updatedAt: new Date()
             });
@@ -71,6 +80,53 @@ const Profile = () => {
     const handleCancel = () => {
         setEditing(false);
         fetchProfile(); // Reset to original values
+    };
+
+    const handleIdFile = async (e) => {
+        const file = e.target.files?.[0];
+        e.target.value = "";
+        if (!file || !currentUser?.uid) return;
+        setIdUploadBusy(true);
+        try {
+            const { downloadURL, storagePath } = await uploadGuestProfileIdImage(
+                currentUser.uid,
+                file,
+                newIdType,
+            );
+            const userRef = doc(db, "users", currentUser.uid);
+            const snap = await getDoc(userRef);
+            const prev = snap.exists() && Array.isArray(snap.data().idDocuments) ? snap.data().idDocuments : [];
+            const next = [
+                ...prev,
+                {
+                    type: newIdType,
+                    downloadURL,
+                    storagePath,
+                    uploadedAt: new Date(),
+                },
+            ];
+            await updateDoc(userRef, { idDocuments: next, updatedAt: new Date() });
+            setIdDocuments(next);
+        } catch (err) {
+            console.error(err);
+            alert(err?.message || "Could not upload ID image. Deploy Storage rules and try again.");
+        } finally {
+            setIdUploadBusy(false);
+        }
+    };
+
+    const removeIdDocument = async (index) => {
+        if (!currentUser?.uid) return;
+        const next = idDocuments.filter((_, i) => i !== index);
+        try {
+            await updateDoc(doc(db, "users", currentUser.uid), {
+                idDocuments: next,
+                updatedAt: new Date(),
+            });
+            setIdDocuments(next);
+        } catch (err) {
+            console.error(err);
+        }
     };
 
     if (loading) {
@@ -168,6 +224,88 @@ const Profile = () => {
                             disabled={!editing}
                             icon={<MdPhone className="h-5 w-5 text-gray-400" />}
                         />
+                    </div>
+
+                    {/* Saved ID documents (used when staff checks you in with this email or phone) */}
+                    <div className="rounded-lg bg-gray-50 p-6 dark:bg-navy-800">
+                        <h3 className="mb-2 text-lg font-semibold text-navy-700 dark:text-white">
+                            Government ID on file
+                        </h3>
+                        <p className="mb-4 text-sm text-gray-600 dark:text-gray-400">
+                            Upload Aadhaar, driving licence, voter ID, or passport. Staff can pull these when they enter
+                            your email or phone at check-in.
+                        </p>
+                        <div className="mb-4 flex flex-wrap items-end gap-3">
+                            <div>
+                                <label className="mb-1 block text-xs text-gray-600 dark:text-gray-400">Document type</label>
+                                <select
+                                    value={newIdType}
+                                    onChange={(e) => setNewIdType(e.target.value)}
+                                    className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm dark:border-navy-600 dark:bg-navy-900 dark:text-white"
+                                >
+                                    {ID_DOCUMENT_TYPES.map((t) => (
+                                        <option key={t.value} value={t.value}>
+                                            {t.label}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                            <input
+                                ref={idFileRef}
+                                type="file"
+                                accept="image/*"
+                                capture="environment"
+                                className="hidden"
+                                onChange={handleIdFile}
+                            />
+                            <button
+                                type="button"
+                                disabled={idUploadBusy}
+                                onClick={() => idFileRef.current?.click()}
+                                className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm text-white hover:bg-brand-600 disabled:opacity-50"
+                            >
+                                <MdCameraAlt className="h-5 w-5" />
+                                {idUploadBusy ? "Uploading…" : "Take photo / upload"}
+                            </button>
+                        </div>
+                        {idDocuments.length === 0 ? (
+                            <p className="text-sm text-gray-500 dark:text-gray-400">No ID images saved yet.</p>
+                        ) : (
+                            <ul className="space-y-3">
+                                {idDocuments.map((docu, idx) => (
+                                    <li
+                                        key={`${docu.storagePath || docu.downloadURL}-${idx}`}
+                                        className="flex flex-wrap items-center gap-3 rounded-lg border border-gray-200 bg-white p-3 dark:border-navy-600 dark:bg-navy-900"
+                                    >
+                                        <a
+                                            href={docu.downloadURL}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="h-16 w-16 shrink-0 overflow-hidden rounded-md border"
+                                        >
+                                            <img
+                                                src={docu.downloadURL}
+                                                alt=""
+                                                className="h-full w-full object-cover"
+                                            />
+                                        </a>
+                                        <div className="min-w-0 flex-1">
+                                            <p className="text-sm font-medium text-navy-700 dark:text-white">
+                                                {idDocumentTypeLabel(docu.type)}
+                                            </p>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => removeIdDocument(idx)}
+                                            className="shrink-0 rounded p-2 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20"
+                                            title="Remove"
+                                        >
+                                            <MdDelete className="h-5 w-5" />
+                                        </button>
+                                    </li>
+                                ))}
+                            </ul>
+                        )}
                     </div>
 
                     {/* Account Information */}

@@ -17,6 +17,10 @@ export default function ComplexTable(props) {
   const [sorting, setSorting] = React.useState([]);
   const [data, setData] = React.useState(() => [...tableData]);
 
+  React.useEffect(() => {
+    setData([...tableData]);
+  }, [tableData]);
+
   const formatCell = (value, accessor) => {
     if (value == null) return "";
     // Allow pre-rendered JSX values (badges/actions)

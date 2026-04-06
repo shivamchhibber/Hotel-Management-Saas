@@ -11,6 +11,68 @@
 		-webkit-font-smoothing: antialiased;
 		letter-spacing: -0.5px;
 	}
+
+	body {
+		background: radial-gradient(1200px 800px at 10% 10%, rgba(134, 140, 255, 0.18), transparent 55%),
+			radial-gradient(900px 700px at 90% 0%, rgba(67, 44, 243, 0.12), transparent 55%),
+			#f4f7fe;
+	}
+
+	.dark body {
+		background: radial-gradient(1200px 800px at 10% 10%, rgba(134, 140, 255, 0.12), transparent 55%),
+			radial-gradient(900px 700px at 90% 0%, rgba(67, 44, 243, 0.10), transparent 55%),
+			#0b1437;
+	}
+}
+
+@layer components {
+	/* Apple-like surfaces */
+	.al-surface {
+		@apply rounded-2xl bg-white/80 shadow-sm ring-1 ring-black/5 backdrop-blur-xl;
+	}
+	.dark .al-surface {
+		@apply bg-navy-800/70 ring-white/10;
+	}
+
+	.al-card {
+		@apply al-surface p-4;
+	}
+
+	/* Buttons */
+	.al-btn {
+		@apply inline-flex items-center justify-center rounded-2xl px-4 py-3 text-base font-semibold transition active:scale-[0.99] disabled:opacity-50;
+	}
+	.al-btn-primary {
+		@apply al-btn bg-brand-500 text-white hover:bg-brand-600;
+	}
+	.al-btn-danger {
+		@apply al-btn bg-red-500 text-white hover:bg-red-600;
+	}
+	.al-btn-secondary {
+		@apply al-btn bg-gray-100 text-navy-700 hover:bg-gray-200;
+	}
+	.dark .al-btn-secondary {
+		@apply bg-navy-900 text-white hover:bg-navy-700;
+	}
+
+	/* Inputs (big touch targets) */
+	.al-input {
+		@apply w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-base text-navy-700 shadow-sm outline-none focus:border-brand-500;
+	}
+	.dark .al-input {
+		@apply border-navy-600 bg-navy-900 text-white;
+	}
+
+	/* Modal shell */
+	.al-modal-overlay {
+		@apply fixed inset-0 z-50 overflow-y-auto bg-black/60 p-4;
+	}
+	.al-modal-center {
+		@apply min-h-full flex items-start justify-center py-6;
+	}
+	.al-modal {
+		@apply al-surface w-full max-h-[85vh] overflow-y-auto p-6;
+	}
 }
 
 input.defaultCheckbox::before {

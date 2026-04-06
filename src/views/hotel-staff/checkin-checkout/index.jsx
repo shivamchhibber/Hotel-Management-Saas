@@ -2,7 +2,11 @@ import React, { useState, useEffect } from "react";
 import { collection, getDocs, addDoc, updateDoc, doc, query, where, orderBy } from "firebase/firestore";
 import { db } from "../../../firebase/config";
 import { useAuth } from "contexts/AuthContext";
+import { getHotelIdFromUserProfile } from "utils/userProfileUtils";
+import { staffListGuestsFn } from "utils/staffCallables";
+import GuestIdCaptureBlock from "components/guest/GuestIdCaptureBlock";
 import InputField from "components/fields/InputField";
+import Modal from "components/ui/Modal";
 import {
     MdLogin,
     MdLogout,
@@ -20,6 +24,10 @@ const CheckinCheckout = () => {
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState("");
     const [showModal, setShowModal] = useState(false);
+    const [showCheckoutModal, setShowCheckoutModal] = useState(false);
+    const [checkoutGuest, setCheckoutGuest] = useState(null);
+    const [checkoutExtraCharges, setCheckoutExtraCharges] = useState("0");
+    const [checkoutReason, setCheckoutReason] = useState("damages");
     const [formData, setFormData] = useState({
         guestName: '',
         email: '',
@@ -28,9 +36,12 @@ const CheckinCheckout = () => {
         checkInDate: '',
         checkOutDate: '',
         amount: '',
-        idProof: '',
+        idDocumentType: 'aadhaar',
+        idDocumentNumber: '',
+        idImages: [],
         address: ''
     });
+    const [staffHotelId, setStaffHotelId] = useState(null);
 
     useEffect(() => {
         if (currentUser) {
@@ -38,31 +49,45 @@ const CheckinCheckout = () => {
         }
     }, [currentUser]);
 
+    useEffect(() => {
+        let cancelled = false;
+        if (!currentUser?.uid) return undefined;
+        (async () => {
+            const hid = await getHotelIdFromUserProfile(currentUser.uid);
+            if (!cancelled) setStaffHotelId(hid);
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [currentUser]);
+
     const fetchGuests = async () => {
         try {
             setLoading(true);
 
-            // Get user's hotel ID
-            const userDoc = await getDocs(query(collection(db, "users"), where("uid", "==", currentUser.uid)));
-            const userData = userDoc.docs[0]?.data();
-            const hotelId = userData?.hotelId;
-
-            if (!hotelId) {
-                console.error("No hotel ID found for user");
-                return;
+            let guestsData = [];
+            try {
+                const { data } = await staffListGuestsFn({});
+                guestsData = Array.isArray(data?.guests) ? data.guests : [];
+            } catch (callableErr) {
+                console.warn("staffListGuests failed; falling back to Firestore query:", callableErr);
+                const hotelId = await getHotelIdFromUserProfile(currentUser.uid);
+                if (!hotelId) {
+                    console.error("No hotel ID on users/{uid}; staff profile missing hotelId.");
+                    setGuests([]);
+                    return;
+                }
+                const guestsQuery = query(
+                    collection(db, "guests"),
+                    where("hotelId", "==", hotelId),
+                    orderBy("createdAt", "desc"),
+                );
+                const guestsSnapshot = await getDocs(guestsQuery);
+                guestsData = guestsSnapshot.docs.map((d) => ({
+                    id: d.id,
+                    ...d.data(),
+                }));
             }
-
-            // Fetch guests for this hotel
-            const guestsQuery = query(
-                collection(db, "guests"),
-                where("hotelId", "==", hotelId),
-                orderBy("createdAt", "desc")
-            );
-            const guestsSnapshot = await getDocs(guestsQuery);
-            const guestsData = guestsSnapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data()
-            }));
             setGuests(guestsData);
         } catch (error) {
             console.error("Error fetching guests:", error);
@@ -74,14 +99,27 @@ const CheckinCheckout = () => {
     const handleCheckIn = async (e) => {
         e.preventDefault();
         try {
-            // Get user's hotel ID
-            const userDoc = await getDocs(query(collection(db, "users"), where("uid", "==", currentUser.uid)));
-            const userData = userDoc.docs[0]?.data();
-            const hotelId = userData?.hotelId;
+            const hotelId = await getHotelIdFromUserProfile(currentUser.uid);
+            if (!hotelId) {
+                console.error("No hotel ID for staff user");
+                return;
+            }
 
-            // Create guest record
             const guestData = {
-                ...formData,
+                guestName: formData.guestName,
+                name: formData.guestName,
+                email: formData.email,
+                phoneNumber: formData.phoneNumber,
+                roomNumber: formData.roomNumber,
+                address: formData.address,
+                idDocumentType: formData.idDocumentType,
+                idDocumentNumber: formData.idDocumentNumber,
+                idProof: formData.idDocumentNumber,
+                idDocumentImages: formData.idImages.map(({ url, type, fromProfile }) => ({
+                    url,
+                    type: type || formData.idDocumentType,
+                    fromProfile: !!fromProfile,
+                })),
                 hotelId,
                 isCheckedIn: true,
                 checkInDate: new Date(formData.checkInDate),
@@ -98,6 +136,8 @@ const CheckinCheckout = () => {
                 guestId: guestRef.id,
                 hotelId,
                 guestName: formData.guestName,
+                guestEmail: formData.email,
+                guestPhone: formData.phoneNumber,
                 roomNumber: formData.roomNumber,
                 checkInDate: new Date(formData.checkInDate),
                 amount: parseFloat(formData.amount),
@@ -124,7 +164,9 @@ const CheckinCheckout = () => {
                 checkInDate: '',
                 checkOutDate: '',
                 amount: '',
-                idProof: '',
+                idDocumentType: 'aadhaar',
+                idDocumentNumber: '',
+                idImages: [],
                 address: ''
             });
             fetchGuests();
@@ -149,10 +191,13 @@ const CheckinCheckout = () => {
             await addDoc(collection(db, "checkouts"), {
                 guestId,
                 hotelId: guest.hotelId,
-                guestName: guest.name,
+                guestName: guest.name || guest.guestName,
                 roomNumber: guest.roomNumber,
                 checkOutDate: new Date(),
                 amount: guest.amount,
+                additionalCharges: Number(checkoutExtraCharges || 0) || 0,
+                additionalChargeReason: checkoutReason,
+                totalAmount: (Number(guest.amount || 0) || 0) + (Number(checkoutExtraCharges || 0) || 0),
                 staffId: currentUser.uid,
                 createdAt: new Date()
             });
@@ -161,7 +206,7 @@ const CheckinCheckout = () => {
             await addDoc(collection(db, "activity_logs"), {
                 hotelId: guest.hotelId,
                 action: 'check_out',
-                guestName: guest.name,
+                guestName: guest.name || guest.guestName,
                 roomNumber: guest.roomNumber,
                 staffId: currentUser.uid,
                 timestamp: new Date()
@@ -170,21 +215,33 @@ const CheckinCheckout = () => {
             fetchGuests();
         } catch (error) {
             console.error("Error checking out guest:", error);
+        } finally {
+            setShowCheckoutModal(false);
+            setCheckoutGuest(null);
         }
     };
 
+    const openCheckoutModal = (guest) => {
+        setCheckoutGuest(guest);
+        setCheckoutExtraCharges("0");
+        setCheckoutReason("damages");
+        setShowCheckoutModal(true);
+    };
+
     const filteredGuests = guests.filter(guest => {
+        const nm = (guest.name || guest.guestName || "").toLowerCase();
+        const em = (guest.email || guest.guestEmail || "").toLowerCase();
+        const ph = guest.phoneNumber || guest.guestPhone || "";
         if (activeTab === "checkin") {
             return !guest.isCheckedIn &&
-                (guest.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                    guest.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                    guest.phoneNumber?.includes(searchTerm));
-        } else {
-            return guest.isCheckedIn &&
-                (guest.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                    guest.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                    guest.phoneNumber?.includes(searchTerm));
+                (nm.includes(searchTerm.toLowerCase()) ||
+                    em.includes(searchTerm.toLowerCase()) ||
+                    ph.includes(searchTerm));
         }
+        return guest.isCheckedIn &&
+            (nm.includes(searchTerm.toLowerCase()) ||
+                em.includes(searchTerm.toLowerCase()) ||
+                ph.includes(searchTerm));
     });
 
     const formatDate = (date) => {
@@ -265,7 +322,7 @@ const CheckinCheckout = () => {
                     <div key={guest.id} className="rounded-lg bg-white p-6 shadow-sm dark:bg-navy-800">
                         <div className="mb-4 flex items-center justify-between">
                             <h3 className="text-lg font-semibold text-navy-700 dark:text-white">
-                                {guest.name}
+                                {guest.name || guest.guestName || "Guest"}
                             </h3>
                             <span className={`px-2 py-1 rounded-full text-xs font-medium ${guest.isCheckedIn
                                 ? 'bg-green-100 text-green-800'
@@ -278,7 +335,7 @@ const CheckinCheckout = () => {
                         <div className="space-y-2 text-sm text-gray-600">
                             <div className="flex items-center gap-2">
                                 <MdPerson className="h-4 w-4" />
-                                <span>{guest.email}</span>
+                                <span>{guest.email || guest.guestEmail || "—"}</span>
                             </div>
                             <div className="flex items-center gap-2">
                                 <MdRoom className="h-4 w-4" />
@@ -296,7 +353,7 @@ const CheckinCheckout = () => {
 
                         {activeTab === "checkout" && guest.isCheckedIn && (
                             <button
-                                onClick={() => handleCheckOut(guest.id)}
+                                onClick={() => openCheckoutModal(guest)}
                                 className="mt-4 w-full rounded-lg bg-red-500 px-4 py-2 text-white hover:bg-red-600"
                             >
                                 Check Out
@@ -307,21 +364,12 @@ const CheckinCheckout = () => {
             </div>
 
             {/* Check-in Modal */}
-            {showModal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-                    <div className="w-full max-w-2xl rounded-lg bg-white p-6 dark:bg-navy-800">
-                        <div className="mb-4 flex items-center justify-between">
-                            <h3 className="text-xl font-bold text-navy-700 dark:text-white">
-                                New Check-in
-                            </h3>
-                            <button
-                                onClick={() => setShowModal(false)}
-                                className="text-gray-500 hover:text-gray-700"
-                            >
-                                ×
-                            </button>
-                        </div>
-
+            <Modal
+                open={showModal}
+                title="New Check-in"
+                onClose={() => setShowModal(false)}
+                maxWidthClass="max-w-2xl"
+            >
                         <form onSubmit={handleCheckIn} className="space-y-4">
                             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                                 <InputField
@@ -382,14 +430,25 @@ const CheckinCheckout = () => {
                                     onChange={(e) => setFormData({ ...formData, amount: e.target.value })}
                                     required
                                 />
-
-                                <InputField
-                                    label="ID Proof"
-                                    placeholder="Enter ID proof details"
-                                    value={formData.idProof}
-                                    onChange={(e) => setFormData({ ...formData, idProof: e.target.value })}
-                                />
                             </div>
+
+                            <GuestIdCaptureBlock
+                                staffUid={currentUser?.uid}
+                                hotelId={staffHotelId}
+                                email={formData.email}
+                                phone={formData.phoneNumber}
+                                idDocumentType={formData.idDocumentType}
+                                setIdDocumentType={(v) => setFormData((f) => ({ ...f, idDocumentType: v }))}
+                                idDocumentNumber={formData.idDocumentNumber}
+                                setIdDocumentNumber={(v) => setFormData((f) => ({ ...f, idDocumentNumber: v }))}
+                                idImages={formData.idImages}
+                                setIdImages={(updater) =>
+                                    setFormData((f) => ({
+                                        ...f,
+                                        idImages: typeof updater === "function" ? updater(f.idImages) : updater,
+                                    }))
+                                }
+                            />
 
                             <InputField
                                 label="Address"
@@ -402,21 +461,101 @@ const CheckinCheckout = () => {
                                 <button
                                     type="button"
                                     onClick={() => setShowModal(false)}
-                                    className="flex-1 rounded-lg bg-gray-200 px-4 py-2 text-gray-700 hover:bg-gray-300"
+                                    className="flex-1 al-btn-secondary"
                                 >
                                     Cancel
                                 </button>
                                 <button
                                     type="submit"
-                                    className="flex-1 rounded-lg bg-brand-500 px-4 py-2 text-white hover:bg-brand-600"
+                                    className="flex-1 al-btn-primary"
                                 >
                                     Check In
                                 </button>
                             </div>
                         </form>
+            </Modal>
+
+            <Modal
+                open={showCheckoutModal && !!checkoutGuest}
+                title="Checkout"
+                onClose={() => setShowCheckoutModal(false)}
+                maxWidthClass="max-w-md"
+                footer={
+                    <div className="flex gap-3">
+                        <button
+                            type="button"
+                            onClick={() => setShowCheckoutModal(false)}
+                            className="flex-1 al-btn-secondary"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => handleCheckOut(checkoutGuest.id)}
+                            className="flex-1 al-btn-danger"
+                        >
+                            Confirm checkout
+                        </button>
                     </div>
-                </div>
-            )}
+                }
+            >
+                        <p className="text-sm text-gray-600 dark:text-gray-300">
+                            <strong>{checkoutGuest.name || checkoutGuest.guestName || "Guest"}</strong>
+                            {checkoutGuest.roomNumber ? ` · Room ${checkoutGuest.roomNumber}` : ""}
+                        </p>
+
+                        <div className="mt-4">
+                            <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                                Extra charges reason
+                            </label>
+                            <select
+                                value={checkoutReason}
+                                onChange={(e) => setCheckoutReason(e.target.value)}
+                                className="al-input"
+                            >
+                                <option value="damages">Damages</option>
+                                <option value="minibar">Minibar</option>
+                                <option value="late_checkout">Late checkout</option>
+                                <option value="other">Other</option>
+                            </select>
+                        </div>
+
+                        <div className="mt-4">
+                            <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                                Extra charges (₹)
+                            </label>
+                            <input
+                                type="number"
+                                min="0"
+                                inputMode="numeric"
+                                value={checkoutExtraCharges}
+                                onChange={(e) => setCheckoutExtraCharges(e.target.value)}
+                                className="al-input"
+                                placeholder="0"
+                            />
+                            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                                Add damages, minibar, late checkout, etc.
+                            </p>
+                        </div>
+
+                        <div className="mt-4 rounded-lg bg-gray-50 p-3 text-sm text-gray-700 dark:bg-navy-900 dark:text-gray-200">
+                            <div className="flex items-center justify-between">
+                                <span>Base amount</span>
+                                <span className="font-medium">₹{Number(checkoutGuest.amount || 0) || 0}</span>
+                            </div>
+                            <div className="mt-1 flex items-center justify-between">
+                                <span>Extra charges</span>
+                                <span className="font-medium">₹{Number(checkoutExtraCharges || 0) || 0}</span>
+                            </div>
+                            <div className="mt-1 flex items-center justify-between">
+                                <span>Total</span>
+                                <span className="font-semibold">
+                                    ₹{(Number(checkoutGuest.amount || 0) || 0) + (Number(checkoutExtraCharges || 0) || 0)}
+                                </span>
+                            </div>
+                        </div>
+
+            </Modal>
         </div>
     );
 };

@@ -194,6 +194,62 @@ REACT_APP_FIREBASE_PROJECT_ID=your-project-id
 # ... other Firebase config
 ```
 
+## Troubleshooting: Callable “CORS” / `OPTIONS 403` from localhost
+
+If the browser shows **CORS** and DevTools shows **`OPTIONS … 403 Forbidden`** to  
+`https://us-central1-<project>.cloudfunctions.net/<functionName>`, the preflight is being **rejected by Google Cloud IAM**, not by your React code.
+
+### Is it safe to let “all users” invoke these functions?
+
+**Yes, for Firebase HTTPS *callables* this is the normal model** — with an important distinction:
+
+| Layer | What it controls |
+|--------|------------------|
+| **Cloud IAM (`Cloud Functions Invoker` for `allUsers`)** | Who may **call the URL** (send HTTP `OPTIONS` + `POST`). The browser must reach the endpoint; there is no separate “login” at this layer. |
+| **Your function code (`context.auth`, Firestore `users` role)** | Who may **do the action**. Example: `superAdminCreateHotel` checks Firebase ID token + `users/{uid}.role === 'super_admin'`; others get `permission-denied` / `unauthenticated`. |
+
+So **random people on the internet** can **hit** the function URL the same way they can **hit** your Hosting URL — they **cannot** create hotels without a valid **super admin** account and token. **Staff vs owner vs guest** is enforced **inside** each function, not by hiding the endpoint.
+
+If your organization **forbids** `allUsers` invoker, you need a different architecture (e.g. API behind IAP / API Gateway); standard Firebase Callable hosting assumes public invoker + app-level auth.
+
+### Fix — option A: Google Cloud Console (click-through)
+
+1. Open [Google Cloud Console](https://console.cloud.google.com/) and select project **`botarmy-hotel-management`** (or yours).
+2. Go to **Cloud Functions** (or **Security → IAM** is not the right place for per-function invoker; use the function list).
+3. Click each **callable** name:  
+   `superAdminCreateHotel`, `superAdminListHotels`, `superAdminListUsers`, `createStaffUser`, `staffListRooms`, `deleteStaffUser`, `resetStaffPassword`.
+4. Open the **Permissions** (or **Security**) tab for that function.
+5. **Grant access** → **New principal** → enter **`allUsers`** → role **Cloud Functions Invoker** (`roles/cloudfunctions.invoker`) → Save.
+6. Repeat for all six functions.
+7. Hard-refresh the app and try **Create hotel** again; `OPTIONS` should succeed (e.g. **204**) with CORS headers.
+
+### Fix — option B: `gcloud` (one script)
+
+1. Install [Google Cloud SDK](https://cloud.google.com/sdk/docs/install) if needed.
+2. In a terminal:
+
+   ```bash
+   gcloud auth login
+   gcloud config set project botarmy-hotel-management
+   ```
+
+   (Replace with your real project ID.)
+
+3. From the repo root:
+
+   ```bash
+   chmod +x scripts/grant-callable-invoker-public.sh
+   GCLOUD_PROJECT=botarmy-hotel-management ./scripts/grant-callable-invoker-public.sh
+   ```
+
+### If `allUsers` is blocked
+
+Some orgs use an **organization policy** that denies public invokers. Then an org admin must allow it for this project, or you must move to a **private** API pattern (not the default Firebase Callable flow).
+
+### App Check
+
+Firebase Console → **App Check** → if **Cloud Functions** enforcement is **on** but the web app does **not** send App Check tokens, calls can fail. For local dev, turn enforcement off or register the web app with App Check.
+
 ## Contributing
 
 1. Fork the repository

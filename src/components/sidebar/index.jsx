@@ -2,6 +2,7 @@
 
 import { HiX } from "react-icons/hi";
 import Links from "./components/Links";
+import { BRAND } from "theme/brand";
 
 const Sidebar = ({ open, onClose, routes = [] }) => {
   return (
@@ -17,8 +18,14 @@ const Sidebar = ({ open, onClose, routes = [] }) => {
       </span>
 
       <div className={`mx-[24px] mt-[28px] flex items-center`}>
-        <div className="mt-1 ml-1 h-2.5 font-poppins text-[20px] font-bold text-navy-700 dark:text-white">
-          Hotel Management
+        <div className="flex items-center gap-3">
+          <div className="grid h-10 w-10 place-items-center rounded-2xl bg-gradient-to-b from-brandLinear to-brand-500 text-white shadow-sm ring-1 ring-black/10">
+            <span className="text-sm font-extrabold tracking-tight">AL</span>
+          </div>
+          <div className="leading-tight">
+            <div className="text-[15px] font-semibold text-navy-700 dark:text-white">{BRAND.name}</div>
+            <div className="text-[11px] font-medium text-gray-500 dark:text-gray-400">{BRAND.product}</div>
+          </div>
         </div>
       </div>
       <div className="mt-4 mb-4 h-px bg-gray-300 dark:bg-white/30" />

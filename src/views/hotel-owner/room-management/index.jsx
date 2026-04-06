@@ -1,12 +1,12 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { collection, getDocs, getDoc, doc, addDoc, updateDoc, deleteDoc, query, where, serverTimestamp } from "firebase/firestore";
 import { db } from "../../../firebase/config";
 import { useAuth } from "contexts/AuthContext";
 import { resolveHotelIdForOwner } from "utils/hotelOwnerUtils";
+import { ownerListRoomsFn } from "utils/ownerCallables";
 import ComplexTable from "views/admin/default/components/ComplexTable";
 import InputField from "components/fields/InputField";
 import {
-    MdHotel,
     MdAdd,
     MdEdit,
     MdDelete,
@@ -41,50 +41,48 @@ const RoomManagement = () => {
     const roomTypes = ['Standard', 'Deluxe', 'Suite', 'Presidential'];
     const roomAmenities = ['WiFi', 'TV', 'AC', 'Mini Bar', 'Safe', 'Balcony', 'Sea View', 'City View', 'Jacuzzi', 'Kitchenette'];
 
-    useEffect(() => {
-        if (currentUser) {
-            fetchRooms();
-            fetchRecentActions();
-        }
-    }, [currentUser]);
-
-    const fetchRooms = async () => {
+    const fetchRooms = useCallback(async () => {
         try {
             setLoading(true);
 
-            const hotelId = await resolveHotelIdForOwner(currentUser.uid);
+            let roomsData = [];
+            try {
+                const { data } = await ownerListRoomsFn({});
+                roomsData = Array.isArray(data?.rooms) ? data.rooms : [];
+            } catch (callableErr) {
+                console.warn("ownerListRooms failed; falling back to Firestore query:", callableErr);
+                const hotelId = await resolveHotelIdForOwner(currentUser.uid);
 
-            if (!hotelId) {
-                console.error("No hotel ID found for user");
-                setRooms([]);
-                return;
+                if (!hotelId) {
+                    console.error("No hotel ID found for user");
+                    setRooms([]);
+                    return;
+                }
+
+                const roomsQuery = query(
+                    collection(db, "rooms"),
+                    where("hotelId", "==", hotelId),
+                );
+                const roomsSnapshot = await getDocs(roomsQuery);
+                roomsData = roomsSnapshot.docs.map((d) => ({
+                    id: d.id,
+                    ...d.data(),
+                }));
+                roomsData.sort((a, b) => {
+                    const roomA = parseInt(a.roomNumber, 10) || 0;
+                    const roomB = parseInt(b.roomNumber, 10) || 0;
+                    return roomA - roomB;
+                });
             }
-
-            // Fetch rooms for this hotel
-            const roomsQuery = query(
-                collection(db, "rooms"),
-                where("hotelId", "==", hotelId)
-            );
-            const roomsSnapshot = await getDocs(roomsQuery);
-            const roomsData = roomsSnapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data()
-            }));
-            // Sort rooms by room number in JavaScript
-            roomsData.sort((a, b) => {
-                const roomA = parseInt(a.roomNumber) || 0;
-                const roomB = parseInt(b.roomNumber) || 0;
-                return roomA - roomB;
-            });
             setRooms(roomsData);
         } catch (error) {
             console.error("Error fetching rooms:", error);
         } finally {
             setLoading(false);
         }
-    };
+    }, [currentUser]);
 
-    const fetchRecentActions = async () => {
+    const fetchRecentActions = useCallback(async () => {
         try {
             const hotelId = await resolveHotelIdForOwner(currentUser.uid);
 
@@ -136,7 +134,14 @@ const RoomManagement = () => {
         } catch (error) {
             console.error("Error fetching recent actions:", error);
         }
-    };
+    }, [currentUser]);
+
+    useEffect(() => {
+        if (currentUser) {
+            fetchRooms();
+            fetchRecentActions();
+        }
+    }, [currentUser, fetchRooms, fetchRecentActions]);
 
     const addTestAction = async () => {
         try {

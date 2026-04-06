@@ -9,9 +9,22 @@ import {
 } from "firebase/firestore";
 import { db } from "../firebase/config";
 
+function coerceHotelIdField(raw) {
+    if (raw == null || raw === "") return null;
+    if (typeof raw === "string") {
+        const t = raw.trim();
+        return t || null;
+    }
+    if (typeof raw === "object" && typeof raw.id === "string") {
+        return raw.id;
+    }
+    return null;
+}
+
 async function hotelIsOwnedBy(hotelId, authUid) {
-    if (!hotelId || !authUid) return false;
-    const snap = await getDoc(doc(db, "hotels", hotelId));
+    const id = coerceHotelIdField(hotelId);
+    if (!id || !authUid) return false;
+    const snap = await getDoc(doc(db, "hotels", id));
     return snap.exists() && snap.data()?.ownerId === authUid;
 }
 
@@ -25,6 +38,13 @@ async function hotelIsOwnedBy(hotelId, authUid) {
 export async function resolveHotelIdForOwner(authUid) {
     if (!authUid) return null;
 
+    // Prefer profile hotelId (same as Cloud Functions getHotelIdForOwnerUid) so rooms/staff stay on one hotel.
+    const userByUidDoc = await getDoc(doc(db, "users", authUid));
+    if (userByUidDoc.exists()) {
+        const hid = coerceHotelIdField(userByUidDoc.data()?.hotelId);
+        if (hid && (await hotelIsOwnedBy(hid, authUid))) return hid;
+    }
+
     const hotelSnap = await getDocs(
         query(
             collection(db, "hotels"),
@@ -35,12 +55,6 @@ export async function resolveHotelIdForOwner(authUid) {
     const fromOwnerQuery = hotelSnap.docs[0]?.id ?? null;
     if (fromOwnerQuery) return fromOwnerQuery;
 
-    const userByUidDoc = await getDoc(doc(db, "users", authUid));
-    if (userByUidDoc.exists()) {
-        const hid = userByUidDoc.data()?.hotelId;
-        if (hid && (await hotelIsOwnedBy(hid, authUid))) return hid;
-    }
-
     const legacySnap = await getDocs(
         query(
             collection(db, "users"),
@@ -48,7 +62,7 @@ export async function resolveHotelIdForOwner(authUid) {
             limit(1),
         ),
     );
-    const legacyHid = legacySnap.docs[0]?.data()?.hotelId;
+    const legacyHid = coerceHotelIdField(legacySnap.docs[0]?.data()?.hotelId);
     if (legacyHid && (await hotelIsOwnedBy(legacyHid, authUid))) return legacyHid;
 
     return null;

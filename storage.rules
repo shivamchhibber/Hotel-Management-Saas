@@ -1,0 +1,52 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function authed() {
+      return request.auth != null;
+    }
+
+    function userDoc() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid));
+    }
+
+    function isHotelStaff() {
+      return authed()
+        && firestore.exists(/databases/(default)/documents/users/$(request.auth.uid))
+        && userDoc().data.role == 'hotel_staff';
+    }
+
+    function isHotelOwner() {
+      return authed()
+        && firestore.exists(/databases/(default)/documents/users/$(request.auth.uid))
+        && userDoc().data.role == 'hotel_owner';
+    }
+
+    /** Guest app user: manage their own ID images. */
+    match /guest-profiles/{userId}/{allPaths=**} {
+      allow read, write: if authed() && request.auth.uid == userId
+        && (request.resource == null
+          || (request.resource.size < 6 * 1024 * 1024
+            && request.resource.contentType.matches('image/.*')));
+    }
+
+    /**
+     * Staff check-in captures (camera / gallery). Owner can read for the same hotel folder.
+     * hotelId in path must be the string Firestore hotel document id.
+     */
+    match /checkin_uploads/{hotelId}/{staffUid}/{allPaths=**} {
+      allow write: if authed()
+        && request.auth.uid == staffUid
+        && isHotelStaff()
+        && request.resource.size < 6 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+
+      allow read: if authed() && (
+        (request.auth.uid == staffUid && isHotelStaff())
+        || (isHotelOwner()
+            && firestore.exists(/databases/(default)/documents/hotels/$(hotelId))
+            && firestore.get(/databases/(default)/documents/hotels/$(hotelId)).data.ownerId == request.auth.uid)
+      );
+    }
+  }
+}
